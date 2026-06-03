@@ -47,13 +47,24 @@
 #define DISPLAY_MIRROR_X true
 #define DISPLAY_MIRROR_Y true
 
-/* Servo — LEDC PWM */
-#define SERVO_GPIO          GPIO_NUM_13
-#define SERVO_LEDC_TIMER   LEDC_TIMER_0
-#define SERVO_LEDC_CHANNEL LEDC_CHANNEL_0
-#define SERVO_FREQ_HZ       50
-#define SERVO_RESOLUTION    LEDC_TIMER_14_BIT
-#define SERVO_US_MIN        500
-#define SERVO_US_MAX        2500
+/* ── PCA9685 16-channel PWM driver ─────────────────── */
+#define PCA9685_I2C_ADDR       0x40
+
+/* Channel allocation: CH0–CH7 = servos, CH8–CH15 = LEDs */
+#define PCA9685_SERVO_CH_FIRST  0
+#define PCA9685_SERVO_CH_LAST   7
+#define PCA9685_LED_CH_FIRST    8
+#define PCA9685_LED_CH_LAST     15
+
+/* Servo pulse range (µs) — 500 µs = 0°, 2500 µs = 180° */
+#define SERVO_US_MIN  500
+#define SERVO_US_MAX  2500
+
+/* ── Limit switch (user acknowledgment) ─────────────── */
+#define LIMIT_SWITCH_GPIO      GPIO_NUM_38
+
+/* ── Interactive Clock hours ────────────────────────── */
+#define CLOCK_HOUR_COUNT       8
+/* 24 h format: 8, 9, 10, 11, 13, 14, 15, 16 (skip 12 = lunch) */
 
 #endif // _BOARD_CONFIG_H_

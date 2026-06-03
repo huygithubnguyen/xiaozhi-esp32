@@ -8,6 +8,7 @@
 #include "mcp_server.h"
 #include "led/single_led.h"
 #include "assets/lang_config.h"
+#include "pca9685.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -32,6 +33,7 @@ private:
     esp_lcd_panel_handle_t panel_ = nullptr;
     Display* display_ = nullptr;
     Button boot_button_;
+    Pca9685* pca9685_ = nullptr;
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {
@@ -98,6 +100,18 @@ private:
         display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     }
 
+    void InitializePca9685() {
+        /* Probe first — PCA9685 may not be connected yet */
+        esp_err_t probe = i2c_master_probe(display_i2c_bus_, PCA9685_I2C_ADDR, 100);
+        if (probe != ESP_OK) {
+            ESP_LOGW(TAG, "PCA9685 not found at 0x%02X — skipping (not connected?)", PCA9685_I2C_ADDR);
+            pca9685_ = nullptr;
+            return;
+        }
+        pca9685_ = new Pca9685(display_i2c_bus_, PCA9685_I2C_ADDR);
+        ESP_ERROR_CHECK(pca9685_->Init(50.0f));
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
@@ -160,8 +174,12 @@ public:
         boot_button_(BOOT_BUTTON_GPIO) {
         InitializeDisplayI2c();
         InitializeSsd1306Display();
+        InitializePca9685();
         InitializeButtons();
         InitializeTools();
+
+        // TODO: Remove after hardware verification
+        TestPca9685();
     }
 
     virtual Led* GetLed() override {
@@ -182,6 +200,50 @@ public:
 
     virtual Display* GetDisplay() override {
         return display_;
+    }
+
+    Pca9685* GetPca9685() { return pca9685_; }
+
+    void TestPca9685() {
+        if (!pca9685_) {
+            ESP_LOGW(TAG, "PCA9685 not available — test skipped");
+            return;
+        }
+        ESP_LOGI(TAG, "=== PCA9685 Test Start ===");
+
+        /* 1. Sweep each servo CH0–CH7: 0° → 90° → 0° */
+        for (int ch = 0; ch <= 7; ch++) {
+            ESP_LOGI(TAG, "Servo CH%d → 90°", ch);
+            pca9685_->SetServoAngle(ch, 90);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            ESP_LOGI(TAG, "Servo CH%d → 0°", ch);
+            pca9685_->SetServoAngle(ch, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            pca9685_->SetFullOff(ch);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+
+        /* 2. Ramp each LED CH8–CH15: 0 → full brightness */
+        for (int ch = 8; ch <= 15; ch++) {
+            ESP_LOGI(TAG, "LED CH%d → ramp up", ch);
+            for (int duty = 0; duty <= 4095; duty += 256) {
+                pca9685_->SetDuty(ch, duty);
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            pca9685_->SetFullOff(ch);
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+
+        /* 3. Combined: servo CH0 pop + LED CH8 on (simulates 1 hour alert) */
+        ESP_LOGI(TAG, "Combined test: servo CH0 + LED CH8");
+        pca9685_->SetServoAngle(0, 90);
+        pca9685_->SetDuty(8, 4095);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        pca9685_->SetServoAngle(0, 0);
+        pca9685_->SetFullOff(8);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        ESP_LOGI(TAG, "=== PCA9685 Test Done ===");
     }
 };
 
