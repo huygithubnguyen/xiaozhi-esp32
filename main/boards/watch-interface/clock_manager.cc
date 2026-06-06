@@ -1,5 +1,7 @@
 #include "clock_manager.h"
 
+#include <esp_timer.h>
+
 #define TAG "ClockManager"
 
 /* ── Construction ──────────────────────────────────── */
@@ -36,15 +38,21 @@ ClockManager::~ClockManager()
 
 void ClockManager::Start()
 {
-    xTaskCreate(
+    BaseType_t ret = xTaskCreatePinnedToCore(
         TaskEntry,
         "clock_mgr",
         4096,          // stack size
         this,          // arg
         2,             // priority (low)
-        &task_handle_
+        &task_handle_,
+        1              // pin to core 1 (app runs on core 0)
     );
-    ESP_LOGI(TAG, "started — dev interval %d min", kDevIntervalMs / 60000);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "failed to create task (ret=%d)", ret);
+        return;
+    }
+    ESP_LOGI(TAG, "started — dev interval %d s, ack timeout %d s",
+             kDevIntervalMs / 1000, kAckTimeoutMs / 1000);
 }
 
 /* static */
@@ -55,20 +63,33 @@ void ClockManager::TaskEntry(void* arg)
 
 void ClockManager::RunLoop()
 {
+    ESP_LOGI(TAG, ">>> RunLoop entered on core %d <<<", xPortGetCoreID());
+
     while (true) {
         ESP_LOGI(TAG, "=== new cycle ===");
 
         for (int i = 0; i < CLOCK_HOUR_COUNT; i++) {
+            int64_t t0 = esp_timer_get_time();  // µs
+
             /* --- Activate this hour --- */
             ActivateHour(i);
 
             /* --- Wait for acknowledgment or timeout --- */
             int elapsed_ms = 0;
+            int last_log_sec = -1;
             while (elapsed_ms < kAckTimeoutMs) {
                 if (IsSwitchPressed()) {
-                    ESP_LOGI(TAG, "[%s] switch pressed — acknowledged", hours_[i].label);
+                    int64_t ack_ms = (esp_timer_get_time() - t0) / 1000;
+                    ESP_LOGI(TAG, "[%s] switch pressed after %.1f s — acknowledged",
+                             hours_[i].label, ack_ms / 1000.0);
                     AcknowledgeHour(i);
                     break;
+                }
+                int sec = elapsed_ms / 1000;
+                if (sec != last_log_sec && sec % 30 == 0) {
+                    ESP_LOGI(TAG, "[%s] waiting for ack... %d / %d s",
+                             hours_[i].label, sec, kAckTimeoutMs / 1000);
+                    last_log_sec = sec;
                 }
                 vTaskDelay(pdMS_TO_TICKS(kSwitchPollMs));
                 elapsed_ms += kSwitchPollMs;
@@ -76,20 +97,39 @@ void ClockManager::RunLoop()
 
             /* Timeout: auto-acknowledge */
             if (hours_[i].state == HourState::Active) {
-                ESP_LOGW(TAG, "[%s] ack timeout — auto-acknowledged", hours_[i].label);
+                ESP_LOGW(TAG, "[%s] ack timeout (%d s) — auto-acknowledged",
+                         hours_[i].label, kAckTimeoutMs / 1000);
                 AcknowledgeHour(i);
             }
 
-            /* --- Wait remainder of the 7-min interval --- */
+            /* --- Wait remainder of the dev interval --- */
             int remaining = kDevIntervalMs - elapsed_ms;
             if (remaining > 0) {
-                ESP_LOGI(TAG, "[%s] next hour in %d s", hours_[i].label, remaining / 1000);
+#if 1   // Enable logging
+                ESP_LOGI(TAG, "[%s] done — next hour in %d s",
+                         hours_[i].label, remaining / 1000);
+                /* Log every 60 s while waiting */
+                int wait_ms = 0;
+                last_log_sec = -1;
+                while (wait_ms < remaining) {
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    wait_ms += 1000;
+                    int sec = wait_ms / 1000;
+                    if (sec != last_log_sec && sec % 60 == 0) {
+                        ESP_LOGI(TAG, "[%s] next hour in %d s",
+                                 hours_[i].label, (remaining - wait_ms) / 1000);
+                        last_log_sec = sec;
+                    }
+                }
+#else
                 vTaskDelay(pdMS_TO_TICKS(remaining));
+#endif
             }
         }
 
         /* --- End of cycle: reset everything --- */
-        ESP_LOGI(TAG, "=== cycle done — resetting ===");
+        ESP_LOGI(TAG, "=== cycle done (%d hours) — resetting, restart in 5 s ===",
+                 CLOCK_HOUR_COUNT);
         ResetAll();
         vTaskDelay(pdMS_TO_TICKS(5000));  // 5 s pause before next cycle
     }
