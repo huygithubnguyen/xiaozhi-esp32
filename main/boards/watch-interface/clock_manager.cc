@@ -30,6 +30,9 @@ ClockManager::ClockManager(Pca9685* pca9685)
         "It's 3 PM. Keep going!",
         "It's 4 PM. Last hour!",
     };
+    static constexpr int hours24[CLOCK_HOUR_COUNT] = {
+        8, 9, 10, 11, 13, 14, 15, 16,
+    };
 
     for (int i = 0; i < CLOCK_HOUR_COUNT; i++) {
         hours_[i] = {
@@ -38,6 +41,7 @@ ClockManager::ClockManager(Pca9685* pca9685)
             .green_led       = leds[i],
             .label           = labels[i],
             .message         = messages[i],
+            .hour_24         = hours24[i],
             .state           = HourState::Idle,
         };
     }
@@ -55,20 +59,19 @@ ClockManager::~ClockManager()
 void ClockManager::Start()
 {
     BaseType_t ret = xTaskCreatePinnedToCore(
-        TaskEntry,
-        "clock_mgr",
-        4096,
-        this,
-        2,
-        &task_handle_,
-        1
+        TaskEntry, "clock_mgr", 4096, this, 2, &task_handle_, 1
     );
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "failed to create task (ret=%d)", ret);
         return;
     }
-    ESP_LOGI(TAG, "started — dev interval %d s, alarm repeat %d s",
-             kDevIntervalMs / 1000, kAlarmRepeatMs / 1000);
+    ESP_LOGI(TAG, "started — %s, alarm repeat %d s, max alarms %d",
+#if CLOCK_DEV_MODE
+             "DEV 7-min cycle",
+#else
+             "PRODUCTION real-time",
+#endif
+             kAlarmRepeatMs / 1000, kMaxAlarms);
 }
 
 /* static */
@@ -77,12 +80,10 @@ void ClockManager::TaskEntry(void* arg)
     static_cast<ClockManager*>(arg)->RunLoop();
 }
 
-/* ── Time sync ─────────────────────────────────────── */
+/* ── Time helpers ──────────────────────────────────── */
 
 void ClockManager::WaitForTimeSync()
 {
-    /* OTA code already applies timezone offset to server timestamp,
-     * so system time is already local. Set TZ=UTC0 to prevent double-adjust. */
     setenv("TZ", "UTC0", 1);
     tzset();
 
@@ -99,66 +100,136 @@ void ClockManager::WaitForTimeSync()
              t.tm_hour, t.tm_min, t.tm_sec);
 }
 
-/* ── Main loop ─────────────────────────────────────── */
+int ClockManager::FindNextHourIndex() const
+{
+    time_t now = time(nullptr);
+    struct tm t;
+    localtime_r(&now, &t);
+    int current_hm = t.tm_hour * 60 + t.tm_min;
+
+    for (int i = 0; i < CLOCK_HOUR_COUNT; i++) {
+        if (current_hm < hours_[i].hour_24 * 60) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int ClockManager::SecondsUntilHour(int index) const
+{
+    time_t now = time(nullptr);
+    struct tm t;
+    localtime_r(&now, &t);
+
+    struct tm target = t;
+    target.tm_hour = hours_[index].hour_24;
+    target.tm_min  = 0;
+    target.tm_sec  = 0;
+
+    return static_cast<int>(difftime(mktime(&target), now));
+}
+
+/* Sleep with periodic log */
+void ClockManager::SleepLogged(int seconds, const char* label)
+{
+    if (seconds <= 0) return;
+    ESP_LOGI(TAG, "[%s] sleeping %d s", label, seconds);
+
+    int waited = 0;
+    while (waited < seconds) {
+        int chunk = (seconds - waited > 60) ? 60 : (seconds - waited);
+        vTaskDelay(pdMS_TO_TICKS(chunk * 1000));
+        waited += chunk;
+        int left = seconds - waited;
+        if (left > 0 && left % 60 == 0) {
+            ESP_LOGI(TAG, "[%s] %d s remaining", label, left);
+        }
+    }
+}
+
+/* ── Alarm logic (shared) ──────────────────────────── */
+
+void ClockManager::TriggerHourWithAlarms(int index)
+{
+    int64_t t0 = esp_timer_get_time();
+
+    for (int alarm = 0; alarm < kMaxAlarms; alarm++) {
+        if (alarm == 0) {
+            ActivateHour(index);
+        } else {
+            ESP_LOGI(TAG, "[%s] alarm %d/%d (repeat)",
+                     hours_[index].label, alarm + 1, kMaxAlarms);
+            PlayAlarm(index);
+        }
+
+        if (WaitForAck(index, kAlarmRepeatMs, t0)) {
+            return;  // acknowledged
+        }
+    }
+
+    /* Not acknowledged after all alarms */
+    if (hours_[index].state == HourState::Active) {
+        MissHour(index);
+    }
+}
+
+/* ── Main loop (one flow for dev & production) ─────── */
 
 void ClockManager::RunLoop()
 {
     ESP_LOGI(TAG, ">>> RunLoop entered on core %d <<<", xPortGetCoreID());
-
     WaitForTimeSync();
 
     while (true) {
-        ESP_LOGI(TAG, "=== new cycle ===");
+        /* Find next work hour based on real time */
+        int start = FindNextHourIndex();
 
-        for (int i = 0; i < CLOCK_HOUR_COUNT; i++) {
-            int64_t t0 = esp_timer_get_time();
-
-            /* ── Alarm 1: servo pop + red LED + sound ── */
-            ESP_LOGI(TAG, "[%s] alarm 1/2", hours_[i].label);
-            ActivateHour(i);
-
-            bool acked = WaitForAck(i, kAlarmRepeatMs, t0);
-
-            /* ── Alarm 2 if not acknowledged ── */
-            if (!acked) {
-                ESP_LOGI(TAG, "[%s] alarm 2/2 (repeat)", hours_[i].label);
-                PlayAlarm(i);
-
-                acked = WaitForAck(i, kAlarmRepeatMs, t0);
-            }
-
-            /* ── Resolve: acknowledged or missed ── */
-            if (hours_[i].state == HourState::Active) {
-                if (acked) {
-                    AcknowledgeHour(i);
-                } else {
-                    MissHour(i);
-                }
-            }
-
-            /* ── Idle until next "hour" ── */
-            int64_t elapsed_us = esp_timer_get_time() - t0;
-            int remaining = kDevIntervalMs - static_cast<int>(elapsed_us / 1000);
-            if (remaining > 0) {
-                ESP_LOGI(TAG, "[%s] idle — next hour in %d s",
-                         hours_[i].label, remaining / 1000);
-                int wait_ms = 0;
-                while (wait_ms < remaining) {
-                    vTaskDelay(pdMS_TO_TICKS(1000));
-                    wait_ms += 1000;
-                    if (wait_ms % 60 == 0) {
-                        ESP_LOGI(TAG, "[%s] next in %d s",
-                                 hours_[i].label, (remaining - wait_ms) / 1000);
-                    }
-                }
-            }
+        if (start < 0) {
+            /* All hours passed today — wait until tomorrow 00:00 */
+            time_t now = time(nullptr);
+            struct tm t;
+            localtime_r(&now, &t);
+            struct tm midnight = t;
+            midnight.tm_hour = 0;
+            midnight.tm_min  = 0;
+            midnight.tm_sec  = 0;
+            midnight.tm_mday += 1;
+            int wait_sec = static_cast<int>(difftime(mktime(&midnight), now));
+            ESP_LOGI(TAG, "all hours done — sleeping %d s until midnight", wait_sec);
+            SleepLogged(wait_sec, "midnight");
+            ResetAll();
+            start = 0;
         }
 
-        /* --- End of cycle --- */
-        ESP_LOGI(TAG, "=== cycle done (%d hours) — resetting in 5 s ===",
-                 CLOCK_HOUR_COUNT);
-        ResetAll();
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        /* Process each remaining hour */
+        for (int i = start; i < CLOCK_HOUR_COUNT; i++) {
+            /* Wait until it's time for this hour */
+            if constexpr (kHourIntervalMs > 0) {
+                /* Dev: no pre-wait, alarms fire immediately */
+            } else {
+                /* Production: wait until the actual work hour */
+                int wait_sec = SecondsUntilHour(i);
+                if (wait_sec <= 0) continue;  // hour already passed, skip
+                SleepLogged(wait_sec, hours_[i].label);
+            }
+
+            /* Trigger alarm sequence */
+            int64_t t0 = esp_timer_get_time();
+            TriggerHourWithAlarms(i);
+
+            /* After alarms, idle until next interval */
+            if constexpr (kHourIntervalMs > 0) {
+                /* Dev: sleep remainder of the interval */
+                int64_t alarm_ms = (esp_timer_get_time() - t0) / 1000;
+                int idle_ms = kHourIntervalMs - static_cast<int>(alarm_ms);
+                if (idle_ms > 0) {
+                    SleepLogged(idle_ms / 1000, hours_[i].label);
+                }
+            }
+            /* Production: loop will calculate SecondsUntilHour for next i */
+        }
+
+        /* All hours processed — loop back */
     }
 }
 
@@ -194,22 +265,13 @@ void ClockManager::ActivateHour(int index)
     ESP_LOGI(TAG, "[%s] servo CH%d up + red LED CH%d on",
              h.label, h.servo_channel, h.red_led_channel);
 
-    /* Pop servo up to 90° */
     if (pca9685_ != nullptr) {
         pca9685_->SetServoAngle(h.servo_channel, 90);
+        pca9685_->SetFullOff(h.red_led_channel);   // red ON
     }
+    gpio_set_level(h.green_led, 1);                 // green OFF
 
-    /* Red LED on (active LOW: FullOff = output LOW = LED on) */
-    if (pca9685_ != nullptr) {
-        pca9685_->SetFullOff(h.red_led_channel);
-    }
-
-    /* Green LED off */
-    gpio_set_level(h.green_led, 1);
-
-    /* Play notification sound + OLED alert */
     PlayAlarm(index);
-
     h.state = HourState::Active;
 }
 
@@ -218,25 +280,16 @@ void ClockManager::AcknowledgeHour(int index)
     auto& h = hours_[index];
     ESP_LOGI(TAG, "[%s] acknowledged — green on, red off", h.label);
 
-    /* Retract servo */
     if (pca9685_ != nullptr) {
         pca9685_->SetServoAngle(h.servo_channel, 0);
         pca9685_->SetFullOff(h.servo_channel);
+        pca9685_->SetFullOn(h.red_led_channel);    // red OFF
     }
+    gpio_set_level(h.green_led, 0);                 // green ON
 
-    /* Red LED off (FullOn = output HIGH = LED off) */
-    if (pca9685_ != nullptr) {
-        pca9685_->SetFullOn(h.red_led_channel);
-    }
-
-    /* Green LED on */
-    gpio_set_level(h.green_led, 0);
-
-    /* Dismiss OLED alert */
     Application::GetInstance().Schedule([]() {
         Application::GetInstance().DismissAlert();
     });
-
     h.state = HourState::Acknowledged;
 }
 
@@ -245,32 +298,25 @@ void ClockManager::MissHour(int index)
     auto& h = hours_[index];
     ESP_LOGW(TAG, "[%s] missed — red LED stays on", h.label);
 
-    /* Retract servo */
     if (pca9685_ != nullptr) {
         pca9685_->SetServoAngle(h.servo_channel, 0);
         pca9685_->SetFullOff(h.servo_channel);
     }
 
-    /* Red LED stays on, green stays off — no change needed */
-    /* Dismiss OLED alert */
     Application::GetInstance().Schedule([]() {
         Application::GetInstance().DismissAlert();
     });
-
     h.state = HourState::Missed;
 }
 
 void ClockManager::ResetAll()
 {
     for (int i = 0; i < CLOCK_HOUR_COUNT; i++) {
-        /* Retract servo */
         if (pca9685_ != nullptr) {
             pca9685_->SetServoAngle(hours_[i].servo_channel, 0);
             pca9685_->SetFullOff(hours_[i].servo_channel);
-            /* Red LED off */
             pca9685_->SetFullOn(hours_[i].red_led_channel);
         }
-        /* Green LED off */
         gpio_set_level(hours_[i].green_led, 1);
         hours_[i].state = HourState::Idle;
     }
@@ -284,10 +330,11 @@ void ClockManager::ResetAll()
 void ClockManager::PlayAlarm(int index)
 {
     auto& h = hours_[index];
-    auto& app = Application::GetInstance();
-    app.Schedule([label = std::string(h.label), msg = std::string(h.message)]() {
-        Application::GetInstance().Alert(label.c_str(), msg.c_str(), "alarm", Lang::Sounds::OGG_POPUP);
-    });
+    Application::GetInstance().Schedule(
+        [label = std::string(h.label), msg = std::string(h.message)]() {
+            Application::GetInstance().Alert(label.c_str(), msg.c_str(),
+                                             "alarm", Lang::Sounds::OGG_POPUP);
+        });
 }
 
 /* ── Limit switch ──────────────────────────────────── */

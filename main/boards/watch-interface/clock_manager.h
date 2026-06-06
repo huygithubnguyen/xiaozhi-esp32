@@ -11,8 +11,8 @@
 enum class HourState {
     Idle,
     Active,        // servo up, red LED on, waiting for ack
-    Acknowledged,  // switch pressed: servo down, green LED on, red off
-    Missed,        // no ack after 2 alarms: servo down, red LED stays on
+    Acknowledged,  // switch pressed: servo down, green on, red off
+    Missed,        // no ack after max alarms: servo down, red stays on
 };
 
 struct HourSlot {
@@ -21,6 +21,7 @@ struct HourSlot {
     gpio_num_t green_led;     // GPIO for green LED
     const char* label;        // e.g. "8am"
     const char* message;      // e.g. "It's 8 AM"
+    int hour_24;              // 24h: 8, 9, 10, 11, 13, 14, 15, 16
     HourState state;
 };
 
@@ -35,12 +36,18 @@ private:
     void RunLoop();
     static void TaskEntry(void* arg);
 
-    void WaitForTimeSync();            // block until NTP/server time is available
-    void ActivateHour(int index);      // servo pop + red LED on + sound
-    void AcknowledgeHour(int index);   // servo down + green on, red off
-    void MissHour(int index);          // servo down + red stays on
-    void ResetAll();                   // everything off
-    void PlayAlarm(int index);         // play notification sound + OLED alert
+    /* Shared flow — same in dev and production */
+    void WaitForTimeSync();
+    int  FindNextHourIndex() const;
+    int  SecondsUntilHour(int index) const;
+    void TriggerHourWithAlarms(int index);   // alarm loop: activate → repeat → ack/miss
+    void SleepLogged(int seconds, const char* label);
+
+    void ActivateHour(int index);
+    void AcknowledgeHour(int index);
+    void MissHour(int index);
+    void ResetAll();
+    void PlayAlarm(int index);
     bool WaitForAck(int index, int timeout_ms, int64_t t0);
     bool IsSwitchPressed() const;
 
@@ -48,8 +55,13 @@ private:
     TaskHandle_t task_handle_ = nullptr;
     HourSlot hours_[CLOCK_HOUR_COUNT];
 
-    /* Dev-mode timing */
-    static constexpr int kDevIntervalMs  = 7 * 60 * 1000;   // 7 min per "hour"
-    static constexpr int kAlarmRepeatMs  = 2 * 60 * 1000;   // 2 min between alarm repeats
-    static constexpr int kSwitchPollMs   = 100;               // poll switch every 100 ms
+    /* ── Timing (same constants for dev & production) ── */
+#if CLOCK_DEV_MODE
+    static constexpr int kHourIntervalMs = 7 * 60 * 1000;   // 7 min per "hour"
+#else
+    static constexpr int kHourIntervalMs = 0;                // 0 = use real-time
+#endif
+    static constexpr int kAlarmRepeatMs  = 2 * 60 * 1000;   // 2 min between repeats
+    static constexpr int kMaxAlarms      = 2;
+    static constexpr int kSwitchPollMs   = 100;
 };

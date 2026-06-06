@@ -108,4 +108,7 @@
 #define CLOCK_HOUR_COUNT       8
 /* 24 h format: 8, 9, 10, 11, 13, 14, 15, 16 (skip 12 = lunch) */
 
+/* Set to 1 for dev mode (7-min cycle), 0 for production (real hours) */
+#define CLOCK_DEV_MODE         1
+
 #endif // _BOARD_CONFIG_H_
