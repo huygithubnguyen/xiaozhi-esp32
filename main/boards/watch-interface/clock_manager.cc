@@ -94,7 +94,21 @@ void ClockManager::WaitForTimeSync()
 
     time_t now = time(nullptr);
     struct tm t;
+
+#if 0
     localtime_r(&now, &t);
+#else
+    // DEV: fake time at 8:59 AM today (so first trigger is 9am)
+    localtime_r(&now, &t);
+    t.tm_hour = 8;
+    t.tm_min  = 59;
+    t.tm_sec  = 0;
+    time_t fake_now = mktime(&t);
+    struct timeval tv = { .tv_sec = fake_now, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    now = fake_now;
+    localtime_r(&now, &t);
+#endif
     ESP_LOGI(TAG, "time synced — %04d-%02d-%02d %02d:%02d:%02d",
              t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
              t.tm_hour, t.tm_min, t.tm_sec);
