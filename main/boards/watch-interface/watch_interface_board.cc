@@ -128,6 +128,13 @@ private:
             pca9685_->SetFullOn(ch);
         }
         ESP_LOGI(TAG, "PCA9685 red LEDs forced off (active LOW)");
+
+        /* Ensure all servos at 0° */
+        for (int ch = PCA9685_SERVO_CH_FIRST; ch <= PCA9685_SERVO_CH_LAST; ch++) {
+            pca9685_->SetServoAngle(ch, 0);
+            pca9685_->SetFullOff(ch);
+        }
+        ESP_LOGI(TAG, "PCA9685 servos set to 0°");
     }
 
     void InitializeGreenLeds() {

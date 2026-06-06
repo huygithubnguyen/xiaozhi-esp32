@@ -276,12 +276,20 @@ bool ClockManager::WaitForAck(int index, int timeout_ms, int64_t t0)
 void ClockManager::ActivateHour(int index)
 {
     auto& h = hours_[index];
-    ESP_LOGI(TAG, "[%s] servo CH%d up + red LED CH%d on",
+    ESP_LOGI(TAG, "[%s] servo CH%d pop + red LED CH%d on",
              h.label, h.servo_channel, h.red_led_channel);
 
+    /* Pop servo up briefly, then return to 0° */
     if (pca9685_ != nullptr) {
         pca9685_->SetServoAngle(h.servo_channel, 90);
-        pca9685_->SetFullOff(h.red_led_channel);   // red ON
+        vTaskDelay(pdMS_TO_TICKS(1000));     // stay up 1 s
+        pca9685_->SetServoAngle(h.servo_channel, 0);
+        pca9685_->SetFullOff(h.servo_channel);
+    }
+
+    /* Red LED on (active LOW: FullOff = output LOW = LED on) */
+    if (pca9685_ != nullptr) {
+        pca9685_->SetFullOff(h.red_led_channel);
     }
     gpio_set_level(h.green_led, 1);                 // green OFF
 
@@ -294,12 +302,12 @@ void ClockManager::AcknowledgeHour(int index)
     auto& h = hours_[index];
     ESP_LOGI(TAG, "[%s] acknowledged — green on, red off", h.label);
 
+    /* Red LED off (FullOn = output HIGH = LED off) */
     if (pca9685_ != nullptr) {
-        pca9685_->SetServoAngle(h.servo_channel, 0);
-        pca9685_->SetFullOff(h.servo_channel);
-        pca9685_->SetFullOn(h.red_led_channel);    // red OFF
+        pca9685_->SetFullOn(h.red_led_channel);
     }
-    gpio_set_level(h.green_led, 0);                 // green ON
+    /* Green LED on */
+    gpio_set_level(h.green_led, 0);
 
     Application::GetInstance().Schedule([]() {
         Application::GetInstance().DismissAlert();
@@ -312,10 +320,7 @@ void ClockManager::MissHour(int index)
     auto& h = hours_[index];
     ESP_LOGW(TAG, "[%s] missed — red LED stays on", h.label);
 
-    if (pca9685_ != nullptr) {
-        pca9685_->SetServoAngle(h.servo_channel, 0);
-        pca9685_->SetFullOff(h.servo_channel);
-    }
+    /* Servo already returned to 0° after pop. Red stays on. */
 
     Application::GetInstance().Schedule([]() {
         Application::GetInstance().DismissAlert();
