@@ -140,9 +140,9 @@ private:
                 .intr_type = GPIO_INTR_DISABLE,
             };
             gpio_config(&cfg);
-            gpio_set_level(kGreenLeds[i], 0); // LOW = on (green on at init)
+            gpio_set_level(kGreenLeds[i], 1); // HIGH = off
         }
-        ESP_LOGI(TAG, "Green LEDs initialized (active LOW, all ON)");
+        ESP_LOGI(TAG, "Green LEDs initialized (active LOW)");
     }
 
     void InitializeLimitSwitch() {
