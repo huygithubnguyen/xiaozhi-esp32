@@ -12,6 +12,7 @@
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
+#include <driver/gpio.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <led_strip.h>
@@ -34,6 +35,14 @@ private:
     Display* display_ = nullptr;
     Button boot_button_;
     Pca9685* pca9685_ = nullptr;
+
+    static constexpr gpio_num_t kGreenLeds[GREEN_LED_COUNT] = {
+        GREEN_LED_HOUR_0, GREEN_LED_HOUR_1, GREEN_LED_HOUR_2, GREEN_LED_HOUR_3,
+        GREEN_LED_HOUR_4, GREEN_LED_HOUR_5, GREEN_LED_HOUR_6, GREEN_LED_HOUR_7,
+    };
+    static constexpr const char* kHourLabels[GREEN_LED_COUNT] = {
+        "8am", "9am", "10am", "11am", "1pm", "2pm", "3pm", "4pm"
+    };
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {
@@ -112,6 +121,33 @@ private:
         ESP_ERROR_CHECK(pca9685_->Init(50.0f));
     }
 
+    void InitializeGreenLeds() {
+        for (int i = 0; i < GREEN_LED_COUNT; i++) {
+            gpio_config_t cfg = {
+                .pin_bit_mask = (1ULL << kGreenLeds[i]),
+                .mode = GPIO_MODE_OUTPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            gpio_config(&cfg);
+            gpio_set_level(kGreenLeds[i], 1); // HIGH = off
+        }
+        ESP_LOGI(TAG, "Green LEDs initialized (active LOW)");
+    }
+
+    void InitializeLimitSwitch() {
+        gpio_config_t cfg = {
+            .pin_bit_mask = (1ULL << LIMIT_SWITCH_GPIO),
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&cfg);
+        ESP_LOGI(TAG, "Limit switch initialized on GPIO %d (LOW = pressed)", LIMIT_SWITCH_GPIO);
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
@@ -175,11 +211,15 @@ public:
         InitializeDisplayI2c();
         InitializeSsd1306Display();
         InitializePca9685();
+        InitializeGreenLeds();
+        InitializeLimitSwitch();
         InitializeButtons();
         InitializeTools();
 
         // TODO: Remove after hardware verification
-        TestPca9685();
+        //  TestPca9685();
+        //  TestGreenLeds();
+        // TestLimitSwitch();
     }
 
     virtual Led* GetLed() override {
@@ -244,6 +284,55 @@ public:
         vTaskDelay(pdMS_TO_TICKS(1000));
 
         ESP_LOGI(TAG, "=== PCA9685 Test Done ===");
+    }
+
+    void TestGreenLeds() {
+        ESP_LOGI(TAG, "=== Green LED Test Start ===");
+
+        /* 1. Turn on each green LED one by one */
+        for (int i = 0; i < GREEN_LED_COUNT; i++) {
+            ESP_LOGI(TAG, "Green LED %d (%s) ON", i, kHourLabels[i]);
+            gpio_set_level(kGreenLeds[i], 0); // LOW = on
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+
+        /* 2. All off */
+        ESP_LOGI(TAG, "All green LEDs OFF");
+        for (int i = 0; i < GREEN_LED_COUNT; i++) {
+            gpio_set_level(kGreenLeds[i], 1); // HIGH = off
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        /* 3. All on */
+        ESP_LOGI(TAG, "All green LEDs ON");
+        for (int i = 0; i < GREEN_LED_COUNT; i++) {
+            gpio_set_level(kGreenLeds[i], 0); // LOW = on
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        /* 4. All off */
+        for (int i = 0; i < GREEN_LED_COUNT; i++) {
+            gpio_set_level(kGreenLeds[i], 1);
+        }
+
+        ESP_LOGI(TAG, "=== Green LED Test Done ===");
+    }
+
+    void TestLimitSwitch() {
+        ESP_LOGI(TAG, "=== Limit Switch Test Start ===");
+        ESP_LOGI(TAG, "Press the switch (GPIO %d)... will check for 15 seconds", LIMIT_SWITCH_GPIO);
+
+        bool last_pressed = false;
+        for (int i = 0; i < 150; i++) { // 15 sec, check every 100ms
+            bool pressed = (gpio_get_level(LIMIT_SWITCH_GPIO) == 0); // LOW = pressed
+            if (pressed != last_pressed) {
+                ESP_LOGI(TAG, "Switch %s", pressed ? "PRESSED" : "RELEASED");
+                last_pressed = pressed;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        ESP_LOGI(TAG, "=== Limit Switch Test Done ===");
     }
 };
 

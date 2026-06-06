@@ -3,6 +3,36 @@
 
 #include <driver/gpio.h>
 
+/*
+ * Smart Clock — ESP32-S3 WROOM
+ *
+ *  GPIO  Function
+ *  ───── ─────────────────────────────
+ *   0    BOOT button
+ *   4    INMP441 WS
+ *   5    INMP441 SCK
+ *   6    INMP441 SD
+ *   7    MAX98357A DIN
+ *   8    Green LED 0  (8am)
+ *   9    Green LED 1  (9am)
+ *  10    Green LED 2  (10am)
+ *  11    Green LED 3  (11am)
+ *  12    Green LED 4  (1pm)
+ *  13    Green LED 5  (2pm)
+ *  14    Green LED 6  (3pm)
+ *  15    MAX98357A BCLK
+ *  16    MAX98357A LRCK
+ *  17    Green LED 7  (4pm)
+ *  38    Limit switch
+ *  41    OLED SDA  (I2C bus 0, shared with PCA9685)
+ *  42    OLED SCL  (I2C bus 0, shared with PCA9685)
+ *  48    WS2812 status LED
+ *
+ * PCA9685 (I2C addr 0x40):
+ *  CH0–CH7   8 servos  (8am–5pm, skip 12pm)
+ *  CH8–CH15  8 red LEDs
+ */
+
 #define AUDIO_INPUT_SAMPLE_RATE  16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 
@@ -50,7 +80,7 @@
 /* ── PCA9685 16-channel PWM driver ─────────────────── */
 #define PCA9685_I2C_ADDR       0x40
 
-/* Channel allocation: CH0–CH7 = servos, CH8–CH15 = LEDs */
+/* Channel allocation: CH0–CH7 = servos, CH8–CH15 = red LEDs */
 #define PCA9685_SERVO_CH_FIRST  0
 #define PCA9685_SERVO_CH_LAST   7
 #define PCA9685_LED_CH_FIRST    8
@@ -60,8 +90,19 @@
 #define SERVO_US_MIN  500
 #define SERVO_US_MAX  2500
 
-/* ── Limit switch (user acknowledgment) ─────────────── */
+/* ── Limit switch (active LOW, pressed = LOW) ──────── */
 #define LIMIT_SWITCH_GPIO      GPIO_NUM_38
+
+/* ── Green LEDs (active LOW: 0 = on, 1 = off) ──────── */
+#define GREEN_LED_COUNT        8
+#define GREEN_LED_HOUR_0       GPIO_NUM_8    /* 8am  */
+#define GREEN_LED_HOUR_1       GPIO_NUM_9    /* 9am  */
+#define GREEN_LED_HOUR_2       GPIO_NUM_10   /* 10am */
+#define GREEN_LED_HOUR_3       GPIO_NUM_11   /* 11am */
+#define GREEN_LED_HOUR_4       GPIO_NUM_12   /* 1pm  */
+#define GREEN_LED_HOUR_5       GPIO_NUM_13   /* 2pm  */
+#define GREEN_LED_HOUR_6       GPIO_NUM_14   /* 3pm  */
+#define GREEN_LED_HOUR_7       GPIO_NUM_17   /* 4pm  */
 
 /* ── Interactive Clock hours ────────────────────────── */
 #define CLOCK_HOUR_COUNT       8
