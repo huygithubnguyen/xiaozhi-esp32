@@ -121,6 +121,13 @@ private:
         }
         pca9685_ = new Pca9685(display_i2c_bus_, PCA9685_I2C_ADDR);
         ESP_ERROR_CHECK(pca9685_->Init(50.0f));
+
+        /* Red LEDs (CH8–CH15) are active-LOW: FullOn = output HIGH = LED off.
+         * Init() sets all channels FullOff (output LOW = red ON), so override here. */
+        for (int ch = PCA9685_LED_CH_FIRST; ch <= PCA9685_LED_CH_LAST; ch++) {
+            pca9685_->SetFullOn(ch);
+        }
+        ESP_LOGI(TAG, "PCA9685 red LEDs forced off (active LOW)");
     }
 
     void InitializeGreenLeds() {
@@ -133,9 +140,9 @@ private:
                 .intr_type = GPIO_INTR_DISABLE,
             };
             gpio_config(&cfg);
-            gpio_set_level(kGreenLeds[i], 1); // HIGH = off
+            gpio_set_level(kGreenLeds[i], 0); // LOW = on (green on at init)
         }
-        ESP_LOGI(TAG, "Green LEDs initialized (active LOW)");
+        ESP_LOGI(TAG, "Green LEDs initialized (active LOW, all ON)");
     }
 
     void InitializeLimitSwitch() {
