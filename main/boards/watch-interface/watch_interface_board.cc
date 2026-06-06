@@ -9,6 +9,7 @@
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 #include "pca9685.h"
+#include "clock_manager.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -35,6 +36,7 @@ private:
     Display* display_ = nullptr;
     Button boot_button_;
     Pca9685* pca9685_ = nullptr;
+    ClockManager* clock_manager_ = nullptr;
 
     static constexpr gpio_num_t kGreenLeds[GREEN_LED_COUNT] = {
         GREEN_LED_HOUR_0, GREEN_LED_HOUR_1, GREEN_LED_HOUR_2, GREEN_LED_HOUR_3,
@@ -213,6 +215,8 @@ public:
         InitializePca9685();
         InitializeGreenLeds();
         InitializeLimitSwitch();
+        clock_manager_ = new ClockManager(pca9685_);
+        clock_manager_->Start();
         InitializeButtons();
         InitializeTools();
 
