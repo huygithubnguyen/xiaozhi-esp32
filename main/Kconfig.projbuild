@@ -566,6 +566,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_AI_VOX3
         bool "NULLLAB-AI-VOX3"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_WATCH_INTERFACE
+        bool "Watch Interface (Smart Clock)"
+        depends on IDF_TARGET_ESP32S3
 endchoice
 
 choice
