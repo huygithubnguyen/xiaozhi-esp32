@@ -195,6 +195,9 @@ void ClockManager::RunLoop()
     WaitForTimeSync();
 
     while (true) {
+        /* Reset all LEDs/servos clean before starting a new cycle */
+        ResetAll();
+
         /* Find next work hour based on real time */
         int start = FindNextHourIndex();
 
@@ -281,10 +284,15 @@ void ClockManager::ActivateHour(int index)
 
     /* Pop servo up briefly, then return to 0° */
     if (pca9685_ != nullptr) {
+        ESP_LOGI(TAG, "[%s] servo CH%d → 90°", h.label, h.servo_channel);
         pca9685_->SetServoAngle(h.servo_channel, 90);
-        vTaskDelay(pdMS_TO_TICKS(1000));     // stay up 1 s
+        vTaskDelay(pdMS_TO_TICKS(2000));     // stay up 2 s
+        ESP_LOGI(TAG, "[%s] servo CH%d → 0°", h.label, h.servo_channel);
         pca9685_->SetServoAngle(h.servo_channel, 0);
+        vTaskDelay(pdMS_TO_TICKS(500));      // wait for servo to reach 0°
         pca9685_->SetFullOff(h.servo_channel);
+    } else {
+        ESP_LOGW(TAG, "[%s] PCA9685 not available — servo skipped", h.label);
     }
 
     /* Red LED on (active LOW: FullOff = output LOW = LED on) */
