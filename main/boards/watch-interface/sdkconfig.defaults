@@ -1,0 +1,2 @@
+# Watch Interface board defaults (no PSRAM)
+CONFIG_SPIRAM=n
