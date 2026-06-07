@@ -246,7 +246,26 @@ void ClockManager::RunLoop()
             /* Production: loop will calculate SecondsUntilHour for next i */
         }
 
-        /* All hours processed — loop back */
+        /* All hours processed — wait until next day */
+        if constexpr (kHourIntervalMs > 0) {
+            /* Dev: one cycle done, idle forever (don't exit task) */
+            ESP_LOGI(TAG, "all %d hours processed — dev cycle complete, idling", CLOCK_HOUR_COUNT);
+            while (true) { vTaskDelay(pdMS_TO_TICKS(3600000)); }
+        } else {
+            /* Production: wait until midnight, then restart */
+            time_t now = time(nullptr);
+            struct tm t;
+            localtime_r(&now, &t);
+            struct tm midnight = t;
+            midnight.tm_hour = 0;
+            midnight.tm_min  = 0;
+            midnight.tm_sec  = 0;
+            midnight.tm_mday += 1;
+            int wait_sec = static_cast<int>(difftime(mktime(&midnight), now));
+            ESP_LOGI(TAG, "all hours done — sleeping %d s until midnight", wait_sec);
+            SleepLogged(wait_sec, "midnight");
+            /* Loop continues → ResetAll + FindNextHourIndex for new day */
+        }
     }
 }
 

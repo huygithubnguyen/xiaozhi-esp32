@@ -57,7 +57,7 @@ private:
 
     /* ── Timing (same constants for dev & production) ── */
 #if CLOCK_DEV_MODE
-    static constexpr int kHourIntervalMs = 7 * 60 * 1000;   // 7 min per "hour"
+    static constexpr int kHourIntervalMs = 2 * 60 * 1000;   // 5 min per "hour"
 #else
     static constexpr int kHourIntervalMs = 0;                // 0 = use real-time
 #endif
