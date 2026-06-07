@@ -373,13 +373,26 @@ void ClockManager::ResetAll()
 
 /* ── Sound + OLED alert ────────────────────────────── */
 
+static const std::string_view kDigitSounds[] = {
+    Lang::Sounds::OGG_0, Lang::Sounds::OGG_1, Lang::Sounds::OGG_2,
+    Lang::Sounds::OGG_3, Lang::Sounds::OGG_4, Lang::Sounds::OGG_5,
+    Lang::Sounds::OGG_6, Lang::Sounds::OGG_7, Lang::Sounds::OGG_8,
+    Lang::Sounds::OGG_9,
+};
+
 void ClockManager::PlayAlarm(int index)
 {
     auto& h = hours_[index];
+    std::string hour_str = std::to_string(h.hour_24);
+
     Application::GetInstance().Schedule(
-        [label = std::string(h.label), msg = std::string(h.message)]() {
-            Application::GetInstance().Alert(label.c_str(), msg.c_str(),
-                                             "alarm", Lang::Sounds::OGG_POPUP);
+        [label = std::string(h.label), msg = std::string(h.message), hour_str]() {
+            // Show message on OLED (no beep)
+            Application::GetInstance().Alert(label.c_str(), msg.c_str(), "alarm");
+            // Speak hour digits in Vietnamese: 8→"8", 10→"1","0", 16→"1","6"
+            for (char c : hour_str) {
+                Application::GetInstance().PlaySound(kDigitSounds[c - '0']);
+            }
         });
 }
 
