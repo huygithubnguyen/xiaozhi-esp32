@@ -23,12 +23,123 @@
 #include <freertos/task.h>
 #include <time.h>
 #include <sys/time.h>
+#include <cmath>
+#include <esp_heap_caps.h>
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
 #endif
 
 #define TAG "WatchInterfaceBoard"
+
+// =============================================================================
+// Sad-face boot test (ILI9341 240x320). Plays a 3-frame tear-drop animation
+// directly on the panel, before LVGL takes over the display.
+// Set to 0 to disable once the LCD is verified.
+// =============================================================================
+#define WATCH_ENABLE_SADFACE_TEST 1
+
+#if WATCH_ENABLE_SADFACE_TEST
+namespace {
+constexpr int kSfW = DISPLAY_WIDTH;
+constexpr int kSfH = DISPLAY_HEIGHT;
+constexpr uint16_t kSfBlack = 0x0000;
+constexpr uint16_t kSfWhite = 0xFFFF;
+
+// Render this many scanlines per panel push. Small static buffer (~9.6 KB)
+// avoids both a large boot-time heap alloc and an untested single 150 KB SPI
+// transfer (LVGL already pushes ~9 KB partial buffers on this board).
+constexpr int kSfStripH = 20;
+static uint16_t s_strip[kSfStripH * kSfW];
+
+// Rotation applied to the face on screen: 0 = upright, 1 = 90 CW, -1 = 90 CCW.
+constexpr int kSfRotate = 1;
+constexpr int kSfCx = kSfW / 2;   // rotation centre (120, 160)
+constexpr int kSfCy = kSfH / 2;
+
+inline bool SfInCircle(int x, int y, int cx, int cy, int r) {
+    int dx = x - cx, dy = y - cy;
+    return dx * dx + dy * dy <= r * r;
+}
+
+inline int SfEdge(int ax, int ay, int bx, int by, int px, int py) {
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+inline bool SfInTri(int x, int y, int ax, int ay, int bx, int by, int cx, int cy) {
+    int e1 = SfEdge(ax, ay, bx, by, x, y);
+    int e2 = SfEdge(bx, by, cx, cy, x, y);
+    int e3 = SfEdge(cx, cy, ax, ay, x, y);
+    return (e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0);
+}
+
+// Final colour of pixel (x,y) for this frame's tear. Shapes applied in paint
+// order; later ones sit on top (eyes, pupils, brows, mouth, eraser, tear).
+inline uint16_t SfPixel(int x, int y, int tear_y, int tear_r) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                 // eyes
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                 // pupils looking down
+    if (SfInTri(x, y, 36, 96, 124, 126, 124, 96) ||                  // brows, slant to centre
+        SfInTri(x, y, 204, 96, 116, 126, 116, 96))
+        c = kSfBlack;
+    if (SfInCircle(x, y, 120, 235, 22))
+        c = kSfWhite;                                                 // mouth
+    if (SfInCircle(x, y, 120, 228, 24))
+        c = kSfBlack;                                                 // eraser above -> frown
+    if (SfInCircle(x, y, 158, tear_y, tear_r))
+        c = kSfWhite;                                                 // tear
+    return c;
+}
+
+// Plays the 3-frame tear-drop animation for a few loops, then returns.
+void RunSadFaceTest(esp_lcd_panel_handle_t panel) {
+    // Backlight is normally enabled later in Start(); turn it on now so the
+    // boot animation is actually visible while it plays.
+    if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
+        gpio_set_direction(DISPLAY_BACKLIGHT_PIN, GPIO_MODE_OUTPUT);
+        gpio_set_level(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT ? 0 : 1);
+    }
+    esp_lcd_panel_disp_on_off(panel, true);
+
+    const int kFrames = 3;
+    const int kLoops = 3;
+    const struct {
+        int y, r;
+    } frames[kFrames] = {{184, 7}, {210, 9}, {236, 10}};
+
+    ESP_LOGI(TAG, "sadface: playing boot animation");
+    for (int loop = 0; loop < kLoops; loop++) {
+        for (int f = 0; f < kFrames; f++) {
+            int ty = frames[f].y, tr = frames[f].r;
+            for (int y0 = 0; y0 < kSfH; y0 += kSfStripH) {
+                int h = (y0 + kSfStripH <= kSfH) ? kSfStripH : (kSfH - y0);
+                for (int row = 0; row < h; row++) {
+                    int sy = y0 + row;
+                    for (int sx = 0; sx < kSfW; sx++) {
+                        int dx, dy;
+                        if (kSfRotate == 1) {        // face 90 CW: sample design = R_CCW(screen)
+                            dx = kSfCx - (sy - kSfCy);
+                            dy = kSfCy + (sx - kSfCx);
+                        } else if (kSfRotate == -1) { // 90 CCW
+                            dx = kSfCx + (sy - kSfCy);
+                            dy = kSfCy - (sx - kSfCx);
+                        } else {
+                            dx = sx;
+                            dy = sy;
+                        }
+                        s_strip[row * kSfW + sx] = SfPixel(dx, dy, ty, tr);
+                    }
+                }
+                esp_lcd_panel_draw_bitmap(panel, 0, y0, kSfW, y0 + h, s_strip);
+            }
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+    }
+}
+}  // namespace
+#endif  // WATCH_ENABLE_SADFACE_TEST
 
 class WatchInterfaceBoard : public WifiBoard {
 private:
@@ -107,6 +218,11 @@ private:
         esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+
+#if WATCH_ENABLE_SADFACE_TEST
+        // Play the sad-face animation before LVGL takes over the panel.
+        RunSadFaceTest(panel);
+#endif
 
         display_ = new SpiLcdDisplay(panel_io, panel,
                                      DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
