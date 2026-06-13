@@ -23,9 +23,15 @@
  *  15    MAX98357A BCLK
  *  16    MAX98357A LRCK
  *  17    Green LED 7  (4pm)
+ *  18    ILI9341 RST
+ *  21    ILI9341 SCK  (SPI3)
  *  38    Limit switch
- *  41    OLED SDA  (I2C bus 0, shared with PCA9685)
- *  42    OLED SCL  (I2C bus 0, shared with PCA9685)
+ *  39    ILI9341 CS   (SPI3)
+ *  40    ILI9341 DC
+ *  41    I2C SDA  (PCA9685)
+ *  42    I2C SCL  (PCA9685)
+ *  45    ILI9341 BL  (backlight)
+ *  47    ILI9341 MOSI (SPI3)
  *  48    WS2812 status LED
  *
  * PCA9685 (I2C addr 0x40):
@@ -59,23 +65,34 @@
 #define BUILTIN_LED_GPIO        GPIO_NUM_48
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 
-#define DISPLAY_SDA_PIN GPIO_NUM_41
-#define DISPLAY_SCL_PIN GPIO_NUM_42
-#define DISPLAY_WIDTH   128
+/* ── I2C bus (PCA9685 only — display is now SPI) ───── */
+#define I2C_SDA_PIN             GPIO_NUM_41
+#define I2C_SCL_PIN             GPIO_NUM_42
 
-#if CONFIG_OLED_SSD1306_128X32
-#define DISPLAY_HEIGHT  32
-#elif CONFIG_OLED_SSD1306_128X64
-#define DISPLAY_HEIGHT  64
-#elif CONFIG_OLED_SH1106_128X64
-#define DISPLAY_HEIGHT  64
-#define SH1106
+/* ── Display: ILI9341 TFT LCD 240×320 — SPI ────────── */
+#define DISPLAY_MOSI_PIN        GPIO_NUM_47
+#define DISPLAY_CLK_PIN         GPIO_NUM_21
+#define DISPLAY_CS_PIN          GPIO_NUM_39
+#define DISPLAY_DC_PIN          GPIO_NUM_40
+#define DISPLAY_RST_PIN         GPIO_NUM_18
+#define DISPLAY_BACKLIGHT_PIN   GPIO_NUM_45
+
+#ifdef CONFIG_LCD_ILI9341_240X320
+#define LCD_TYPE_ILI9341_SERIAL
+#define DISPLAY_WIDTH           240
+#define DISPLAY_HEIGHT          320
+#define DISPLAY_MIRROR_X        false
+#define DISPLAY_MIRROR_Y        false
+#define DISPLAY_SWAP_XY         false
+#define DISPLAY_INVERT_COLOR    false
+#define DISPLAY_RGB_ORDER       LCD_RGB_ELEMENT_ORDER_RGB
+#define DISPLAY_OFFSET_X        0
+#define DISPLAY_OFFSET_Y        0
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#define DISPLAY_SPI_MODE        0
 #else
-#error "OLED display type is not selected"
+#error "LCD display type is not selected"
 #endif
-
-#define DISPLAY_MIRROR_X true
-#define DISPLAY_MIRROR_Y true
 
 /* ── PCA9685 16-channel PWM driver ─────────────────── */
 #define PCA9685_I2C_ADDR       0x40
