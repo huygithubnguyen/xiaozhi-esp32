@@ -315,8 +315,8 @@ void Application::HandleActivationDoneEvent() {
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
     Schedule([this]() {
-        // Play greeting sound
-        audio_service_.PlaySound(Lang::Sounds::OGG_WELCOME);
+        // Greeting sound disabled for Watch Interface (Smart Clock)
+        // audio_service_.PlaySound(Lang::Sounds::OGG_WELCOME);
     });
 }
 
