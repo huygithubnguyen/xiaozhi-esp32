@@ -112,20 +112,49 @@ inline uint16_t SfSadPixel(int x, int y, int tear_y, int tear_r) {
     return c;
 }
 
-// Complete face = happy expression: same eyes/pupils as the other faces, but
-// raised brows and a big open smile, so it is distinct from normal and sad.
-inline uint16_t SfCompletePixel(int x, int y) {
+// Complete face = happy expression. wink: 0 = both eyes open, 1 = left closed,
+// 2 = right closed (the wink animation).
+inline uint16_t SfCompletePixel(int x, int y, int wink) {
     uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                  // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                  // pupils (same layout)
+    if (wink == 1) {
+        if (SfInRect(x, y, 44, 133, 120, 138))
+            c = kSfWhite;                                              // left wink (slit)
+    } else {
+        if (SfInCircle(x, y, 82, 135, 38)) c = kSfWhite;             // left eye open
+        if (SfInCircle(x, y, 82, 150, 15)) c = kSfBlack;             // left pupil
+    }
+    if (wink == 2) {
+        if (SfInRect(x, y, 120, 133, 196, 138))
+            c = kSfWhite;                                              // right wink (slit)
+    } else {
+        if (SfInCircle(x, y, 158, 135, 38)) c = kSfWhite;            // right eye open
+        if (SfInCircle(x, y, 158, 150, 15)) c = kSfBlack;            // right pupil
+    }
     if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
         c = kSfBlack;                                                  // raised (happy) brows
     if (SfInCircle(x, y, 120, 222, 28))
         c = kSfWhite;                                                  // smile base
     if (SfInRect(x, y, 84, 194, 156, 222))
         c = kSfBlack;                                                  // erase top half -> open grin
+    return c;
+}
+
+// Scared face: same eyes/pupils, raised brows and a round "O" mouth. big =
+// true widens the mouth (the gasp animation).
+inline uint16_t SfScaredPixel(int x, int y, bool big) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                  // eyes (same layout)
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                  // pupils (same layout)
+    if (SfInRect(x, y, 50, 74, 114, 79) || SfInRect(x, y, 126, 74, 190, 79))
+        c = kSfBlack;                                                  // raised (scared) brows
+    int ro = big ? 26 : 20;
+    int ri = big ? 15 : 11;
+    if (SfInCircle(x, y, 120, 225, ro))
+        c = kSfWhite;                                                  // open mouth outer
+    if (SfInCircle(x, y, 120, 225, ri))
+        c = kSfBlack;                                                  // hollow centre -> "O" gasp
     return c;
 }
 
@@ -236,15 +265,25 @@ void RunFaceTest(esp_lcd_panel_handle_t panel) {
         return;
     }
 
-    // Complete face: draw once and hold.
-    ESP_LOGI(TAG, "face: complete");
-    SfBlitFull(fb, panel, [](int x, int y) { return SfCompletePixel(x, y); });
-    vTaskDelay(pdMS_TO_TICKS(3000));
-
-    // Screen rectangle covering both eyes (open or closed): the only region
-    // that changes during a blink.
+    // Dirty rectangles reused across faces: the eye region (blink/wink) and the
+    // scared mouth region (gasp). Only these small areas are re-sent per frame.
     int ex0, ey0, ex1, ey1;
     SfDesignRectToScreen(42, 95, 198, 175, 2, &ex0, &ey0, &ex1, &ey1);
+    int mx0, my0, mx1, my1;
+    SfDesignRectToScreen(90, 196, 150, 254, 1, &mx0, &my0, &mx1, &my1);
+
+    // Complete (happy) face: full draw, then wink the right eye a few times.
+    ESP_LOGI(TAG, "face: complete (wink)");
+    SfBlitFull(fb, panel, [](int x, int y) { return SfCompletePixel(x, y, 0); });
+    for (int w = 0; w < 3; w++) {
+        vTaskDelay(pdMS_TO_TICKS(800));
+        SfBlitRect(fb, panel, ex0, ey0, ex1, ey1,
+                   [](int x, int y) { return SfCompletePixel(x, y, 2); });  // wink right
+        vTaskDelay(pdMS_TO_TICKS(150));
+        SfBlitRect(fb, panel, ex0, ey0, ex1, ey1,
+                   [](int x, int y) { return SfCompletePixel(x, y, 0); });  // open
+    }
+    vTaskDelay(pdMS_TO_TICKS(700));
 
     // Normal face: full draw (eyes open) once, then blink only the eye region.
     ESP_LOGI(TAG, "face: normal (blinking)");
@@ -289,6 +328,19 @@ void RunFaceTest(esp_lcd_panel_handle_t panel) {
             vTaskDelay(pdMS_TO_TICKS(300));
         }
     }
+
+    // Scared face: full draw, then the "O" mouth pulses (gasp) a few times.
+    ESP_LOGI(TAG, "face: scared (gasp)");
+    SfBlitFull(fb, panel, [](int x, int y) { return SfScaredPixel(x, y, false); });
+    for (int g = 0; g < 4; g++) {
+        vTaskDelay(pdMS_TO_TICKS(280));
+        SfBlitRect(fb, panel, mx0, my0, mx1, my1,
+                   [](int x, int y) { return SfScaredPixel(x, y, true); });   // big gasp
+        vTaskDelay(pdMS_TO_TICKS(280));
+        SfBlitRect(fb, panel, mx0, my0, mx1, my1,
+                   [](int x, int y) { return SfScaredPixel(x, y, false); });  // small
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     heap_caps_free(fb);
 }
