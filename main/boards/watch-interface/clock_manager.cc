@@ -1,5 +1,6 @@
 #include "clock_manager.h"
 #include "application.h"
+#include "board.h"
 #include "assets/lang_config.h"
 
 #include <esp_timer.h>
@@ -391,6 +392,8 @@ void ClockManager::PlayAlarm(int index)
 
     Application::GetInstance().Schedule(
         [label = std::string(h.label), msg = std::string(h.message), notify]() {
+            // Show the RemindFace for this alarm
+            Board::GetInstance().GetDisplay()->SetEmotion("remind");
             // Show message on OLED + play the hour's notification clip
             Application::GetInstance().Alert(label.c_str(), msg.c_str(), "alarm");
             if (notify != nullptr) {

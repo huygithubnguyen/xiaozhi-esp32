@@ -481,7 +481,8 @@ private:
         if (strcmp(emotion, "surprised") == 0 || strcmp(emotion, "scared") == 0 ||
             strcmp(emotion, "shocked") == 0)
             return kScared;
-        if (strcmp(emotion, "thinking") == 0 || strcmp(emotion, "confused") == 0)
+        if (strcmp(emotion, "thinking") == 0 || strcmp(emotion, "confused") == 0 ||
+            strcmp(emotion, "remind") == 0)
             return kRemind;
         if (strcmp(emotion, "sleeping") == 0 || strcmp(emotion, "sleepy") == 0)
             return kSleep;
