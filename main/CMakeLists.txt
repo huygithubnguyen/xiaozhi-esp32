@@ -966,6 +966,9 @@ endif()
 
 file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
 
+# Bespoke per-hour notification clips (e.g. notify-08-01.ogg for the first 8am ring)
+file(GLOB CUSTOM_NOTIFY_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/custom-notify/*.ogg)
+
 # If target chip is ESP32, exclude specific files to avoid build errors
 if(CONFIG_IDF_TARGET_ESP32)
     list(REMOVE_ITEM SOURCES "audio/codecs/box_audio_codec.cc"
@@ -1001,7 +1004,7 @@ if(CONFIG_BOARD_TYPE_ESP_VOCAT)
 endif()
 
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} ${CUSTOM_NOTIFY_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES

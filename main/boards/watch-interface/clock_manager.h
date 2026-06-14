@@ -47,7 +47,7 @@ private:
     void AcknowledgeHour(int index);
     void MissHour(int index);
     void ResetAll();
-    void PlayAlarm(int index);
+    void PlayAlarm(int index, bool first = false);
     bool WaitForAck(int index, int timeout_ms, int64_t t0);
     bool IsSwitchPressed() const;
 

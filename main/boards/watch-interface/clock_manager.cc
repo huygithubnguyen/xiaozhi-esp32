@@ -100,7 +100,7 @@ void ClockManager::WaitForTimeSync()
 #else
     // DEV: fake time at 8:59 AM today (so first trigger is 9am)
     localtime_r(&now, &t);
-    t.tm_hour = 8;
+    t.tm_hour = 7;
     t.tm_min  = 59;
     t.tm_sec  = 0;
     time_t fake_now = mktime(&t);
@@ -320,7 +320,7 @@ void ClockManager::ActivateHour(int index)
     }
     gpio_set_level(h.green_led, 1);                 // green OFF
 
-    PlayAlarm(index);
+    PlayAlarm(index, /*first=*/true);
     h.state = HourState::Active;
 }
 
@@ -380,15 +380,23 @@ static const std::string_view kDigitSounds[] = {
     Lang::Sounds::OGG_9,
 };
 
-void ClockManager::PlayAlarm(int index)
+void ClockManager::PlayAlarm(int index, bool first)
 {
     auto& h = hours_[index];
     std::string hour_str = std::to_string(h.hour_24);
 
     Application::GetInstance().Schedule(
-        [label = std::string(h.label), msg = std::string(h.message), hour_str]() {
+        [label = std::string(h.label), msg = std::string(h.message),
+         hour_str, first, hour_24 = h.hour_24]() {
             // Show message on OLED (no beep)
             Application::GetInstance().Alert(label.c_str(), msg.c_str(), "alarm");
+
+            // First ring of an hour: play its bespoke notification clip when one
+            // exists, otherwise fall back to speaking the hour digits.
+            if (first && hour_24 == 8) {
+                Application::GetInstance().PlaySound(Lang::Sounds::OGG_NOTIFY_08_01);
+                return;
+            }
             // Speak hour digits in Vietnamese: 8→"8", 10→"1","0", 16→"1","6"
             for (char c : hour_str) {
                 Application::GetInstance().PlaySound(kDigitSounds[c - '0']);
