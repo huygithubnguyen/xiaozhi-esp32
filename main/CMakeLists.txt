@@ -966,7 +966,10 @@ endif()
 
 file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
 
-# Bespoke per-hour notification clips (e.g. notify-08-01.ogg for the first 8am ring)
+# Bespoke per-hour notification clips (Notify_08.ogg → 8am, …). NOTE: adding or
+# removing clips requires `idf.py reconfigure` — file(GLOB) is not re-evaluated
+# automatically, and CONFIGURE_DEPENDS can't be used (ESP-IDF parses this file in
+# script mode while gathering component requirements).
 file(GLOB CUSTOM_NOTIFY_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/custom-notify/*.ogg)
 
 # If target chip is ESP32, exclude specific files to avoid build errors

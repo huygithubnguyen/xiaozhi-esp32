@@ -47,7 +47,7 @@ private:
     void AcknowledgeHour(int index);
     void MissHour(int index);
     void ResetAll();
-    void PlayAlarm(int index, bool first = false);
+    void PlayAlarm(int index);
     bool WaitForAck(int index, int timeout_ms, int64_t t0);
     bool IsSwitchPressed() const;
 
@@ -62,6 +62,6 @@ private:
     static constexpr int kHourIntervalMs = 0;                // 0 = use real-time
 #endif
     static constexpr int kAlarmRepeatMs  = 2 * 60 * 1000;   // 2 min between repeats
-    static constexpr int kMaxAlarms      = 2;
+    static constexpr int kMaxAlarms      = 1;
     static constexpr int kSwitchPollMs   = 100;
 };

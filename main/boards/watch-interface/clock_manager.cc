@@ -320,7 +320,7 @@ void ClockManager::ActivateHour(int index)
     }
     gpio_set_level(h.green_led, 1);                 // green OFF
 
-    PlayAlarm(index, /*first=*/true);
+    PlayAlarm(index);
     h.state = HourState::Active;
 }
 
@@ -373,33 +373,28 @@ void ClockManager::ResetAll()
 
 /* ── Sound + OLED alert ────────────────────────────── */
 
-static const std::string_view kDigitSounds[] = {
-    Lang::Sounds::OGG_0, Lang::Sounds::OGG_1, Lang::Sounds::OGG_2,
-    Lang::Sounds::OGG_3, Lang::Sounds::OGG_4, Lang::Sounds::OGG_5,
-    Lang::Sounds::OGG_6, Lang::Sounds::OGG_7, Lang::Sounds::OGG_8,
-    Lang::Sounds::OGG_9,
-};
-
-void ClockManager::PlayAlarm(int index, bool first)
+void ClockManager::PlayAlarm(int index)
 {
     auto& h = hours_[index];
-    std::string hour_str = std::to_string(h.hour_24);
+
+    // Per-hour notification clip: Notify_08.ogg → 8am, Notify_09.ogg → 9am, …
+    // Hours without a clip yet (14/15/16) show the OLED alert silently.
+    const std::string_view* notify = nullptr;
+    switch (h.hour_24) {
+        case 8:  notify = &Lang::Sounds::OGG_NOTIFY_08; break;
+        case 9:  notify = &Lang::Sounds::OGG_NOTIFY_09; break;
+        case 10: notify = &Lang::Sounds::OGG_NOTIFY_10; break;
+        case 11: notify = &Lang::Sounds::OGG_NOTIFY_11; break;
+        case 13: notify = &Lang::Sounds::OGG_NOTIFY_13; break;
+        default: break;
+    }
 
     Application::GetInstance().Schedule(
-        [label = std::string(h.label), msg = std::string(h.message),
-         hour_str, first, hour_24 = h.hour_24]() {
-            // Show message on OLED (no beep)
+        [label = std::string(h.label), msg = std::string(h.message), notify]() {
+            // Show message on OLED + play the hour's notification clip
             Application::GetInstance().Alert(label.c_str(), msg.c_str(), "alarm");
-
-            // First ring of an hour: play its bespoke notification clip when one
-            // exists, otherwise fall back to speaking the hour digits.
-            if (first && hour_24 == 8) {
-                Application::GetInstance().PlaySound(Lang::Sounds::OGG_NOTIFY_08_01);
-                return;
-            }
-            // Speak hour digits in Vietnamese: 8→"8", 10→"1","0", 16→"1","6"
-            for (char c : hour_str) {
-                Application::GetInstance().PlaySound(kDigitSounds[c - '0']);
+            if (notify != nullptr) {
+                Application::GetInstance().PlaySound(*notify);
             }
         });
 }
