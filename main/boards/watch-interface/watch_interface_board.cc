@@ -24,6 +24,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <cmath>
+#include <cstring>
 #include <esp_heap_caps.h>
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
@@ -39,7 +40,8 @@
 // =============================================================================
 #define WATCH_ENABLE_FACES_TEST 1
 
-#if WATCH_ENABLE_FACES_TEST
+// Face rendering primitives are always compiled: WatchFaceLcdDisplay uses them at
+// runtime, and the boot test (RunFaceTest) is still gated by the macro above.
 namespace {
 constexpr int kSfW = DISPLAY_WIDTH;
 constexpr int kSfH = DISPLAY_HEIGHT;
@@ -412,7 +414,111 @@ void RunFaceTest(esp_lcd_panel_handle_t panel) {
     heap_caps_free(fb);
 }
 }  // namespace
-#endif  // WATCH_ENABLE_FACES_TEST
+
+// =============================================================================
+// WatchFaceLcdDisplay — face-only display.
+//
+// Renders the procedural watch faces (normal / sad / complete / scared / remind
+// / sleep) into a full-screen lv_canvas. No chat bubbles, status text or emoji
+// widgets — just the face, driven by SetEmotion(). LVGL owns the panel I/O,
+// double-buffering and backlight; we only paint the canvas pixels.
+// =============================================================================
+class WatchFaceLcdDisplay : public SpiLcdDisplay {
+public:
+    using SpiLcdDisplay::SpiLcdDisplay;
+
+    void SetupUI() override {
+        // Skip LcdDisplay::SetupUI (chat widgets) — build only a full-screen canvas.
+        Display::SetupUI();  // mark SetupUI as called
+        DisplayLockGuard lock(this);
+
+        lv_obj_t* scr = lv_screen_active();
+        lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+        canvas_ = lv_canvas_create(scr);
+        canvas_buf_ = (uint8_t*)heap_caps_malloc((size_t)kSfW * kSfH * sizeof(uint16_t),
+                                                 MALLOC_CAP_SPIRAM);
+        if (canvas_buf_ == nullptr) {
+            ESP_LOGE(TAG, "face: no PSRAM for canvas buffer");
+            return;
+        }
+        lv_canvas_set_buffer(canvas_, canvas_buf_, kSfW, kSfH, LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_pos(canvas_, 0, 0);
+        lv_obj_clear_flag(canvas_, LV_OBJ_FLAG_SCROLLABLE);
+
+        RenderFace(current_face_);  // paint the initial face
+    }
+
+    void SetEmotion(const char* emotion) override {
+        current_face_ = FaceForEmotion(emotion);
+        if (canvas_buf_ == nullptr) return;  // SetupUI() not done yet — painted there
+        DisplayLockGuard lock(this);
+        RenderFace(current_face_);
+    }
+
+    // Faces only — swallow the chat / status / notification UI calls so the base
+    // implementations don't touch LVGL widgets that were never created.
+    void SetStatus(const char* status) override {}
+    void SetChatMessage(const char* role, const char* content) override {}
+    void ShowNotification(const char* notification, int duration_ms) override {}
+    void ShowNotification(const std::string& notification, int duration_ms) override {}
+    void ClearChatMessages() override {}
+    void SetPreviewImage(std::unique_ptr<LvglImage> image) override { (void)image; }
+    void SetTheme(Theme* theme) override {}
+    void UpdateStatusBar(bool update_all) override {}
+
+private:
+    enum Face { kNormal, kSad, kComplete, kScared, kRemind, kSleep };
+
+    static Face FaceForEmotion(const char* emotion) {
+        if (emotion == nullptr) return kNormal;
+        if (strcmp(emotion, "happy") == 0 || strcmp(emotion, "laughing") == 0 ||
+            strcmp(emotion, "smile") == 0 || strcmp(emotion, "excited") == 0)
+            return kComplete;
+        if (strcmp(emotion, "sad") == 0 || strcmp(emotion, "crying") == 0)
+            return kSad;
+        if (strcmp(emotion, "surprised") == 0 || strcmp(emotion, "scared") == 0 ||
+            strcmp(emotion, "shocked") == 0)
+            return kScared;
+        if (strcmp(emotion, "thinking") == 0 || strcmp(emotion, "confused") == 0)
+            return kRemind;
+        if (strcmp(emotion, "sleeping") == 0 || strcmp(emotion, "sleepy") == 0)
+            return kSleep;
+        return kNormal;  // "neutral" + anything unknown
+    }
+
+    // Paint the whole canvas from the per-pixel face function (same screen→design
+    // rotation the boot test uses) and invalidate so LVGL flushes it to the panel.
+    void RenderFace(Face f) {
+        if (canvas_buf_ == nullptr) return;
+        uint16_t* buf = reinterpret_cast<uint16_t*>(canvas_buf_);
+        for (int y = 0; y < kSfH; y++) {
+            for (int x = 0; x < kSfW; x++) {
+                int dx, dy;
+                SfScreenToDesign(x, y, &dx, &dy);
+                buf[y * kSfW + x] = PixelFor(f, dx, dy);
+            }
+        }
+        lv_obj_invalidate(canvas_);
+    }
+
+    static uint16_t PixelFor(Face f, int dx, int dy) {
+        switch (f) {
+            case kComplete: return SfCompletePixel(dx, dy, 0);    // eyes open
+            case kSad:      return SfSadPixel(dx, dy, 184, 7);    // static tear
+            case kScared:   return SfScaredPixel(dx, dy, false);  // small "O" mouth
+            case kRemind:   return SfRemindPixel(dx, dy, true);   // dot on
+            case kSleep:    return SfSleepPixel(dx, dy, false);   // no Zzz
+            case kNormal:
+            default:        return SfNormalPixel(dx, dy, true);   // eyes open
+        }
+    }
+
+    lv_obj_t* canvas_ = nullptr;
+    uint8_t* canvas_buf_ = nullptr;
+    Face current_face_ = kNormal;
+};
 
 class WatchInterfaceBoard : public WifiBoard {
 private:
@@ -497,7 +603,7 @@ private:
         RunFaceTest(panel);
 #endif
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
+        display_ = new WatchFaceLcdDisplay(panel_io, panel,
                                      DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
                                      DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
