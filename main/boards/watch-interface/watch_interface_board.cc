@@ -37,20 +37,14 @@
 // directly on the panel, before LVGL takes over the display.
 // Set to 0 to disable once the LCD is verified.
 // =============================================================================
-#define WATCH_ENABLE_SADFACE_TEST 1
+#define WATCH_ENABLE_FACES_TEST 1
 
-#if WATCH_ENABLE_SADFACE_TEST
+#if WATCH_ENABLE_FACES_TEST
 namespace {
 constexpr int kSfW = DISPLAY_WIDTH;
 constexpr int kSfH = DISPLAY_HEIGHT;
 constexpr uint16_t kSfBlack = 0x0000;
 constexpr uint16_t kSfWhite = 0xFFFF;
-
-// Render this many scanlines per panel push. Small static buffer (~9.6 KB)
-// avoids both a large boot-time heap alloc and an untested single 150 KB SPI
-// transfer (LVGL already pushes ~9 KB partial buffers on this board).
-constexpr int kSfStripH = 20;
-static uint16_t s_strip[kSfStripH * kSfW];
 
 // Rotation applied to the face on screen: 0 = upright, 1 = 90 CW, -1 = 90 CCW.
 constexpr int kSfRotate = 1;
@@ -60,6 +54,10 @@ constexpr int kSfCy = kSfH / 2;
 inline bool SfInCircle(int x, int y, int cx, int cy, int r) {
     int dx = x - cx, dy = y - cy;
     return dx * dx + dy * dy <= r * r;
+}
+
+inline bool SfInRect(int x, int y, int x0, int y0, int x1, int y1) {
+    return x >= x0 && x <= x1 && y >= y0 && y <= y1;
 }
 
 inline int SfEdge(int ax, int ay, int bx, int by, int px, int py) {
@@ -73,28 +71,140 @@ inline bool SfInTri(int x, int y, int ax, int ay, int bx, int by, int cx, int cy
     return (e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0);
 }
 
-// Final colour of pixel (x,y) for this frame's tear. Shapes applied in paint
-// order; later ones sit on top (eyes, pupils, brows, mouth, eraser, tear).
-inline uint16_t SfPixel(int x, int y, int tear_y, int tear_r) {
+// Normal / neutral face: level brows, straight mouth. Eyes/pupils use the same
+// coordinates as the sad face so the eye layout is identical between the two.
+// eyes_open = false draws closed-eye slits (used for the blink).
+inline uint16_t SfNormalPixel(int x, int y, bool eyes_open) {
     uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                 // eyes
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                 // pupils looking down
-    if (SfInTri(x, y, 36, 96, 124, 126, 124, 96) ||                  // brows, slant to centre
-        SfInTri(x, y, 204, 96, 116, 126, 116, 96))
-        c = kSfBlack;
-    if (SfInCircle(x, y, 120, 235, 22))
-        c = kSfWhite;                                                 // mouth
-    if (SfInCircle(x, y, 120, 228, 24))
-        c = kSfBlack;                                                 // eraser above -> frown
-    if (SfInCircle(x, y, 158, tear_y, tear_r))
-        c = kSfWhite;                                                 // tear
+    if (eyes_open) {
+        if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+            c = kSfWhite;                                               // eyes (same as sad)
+        if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+            c = kSfBlack;                                               // pupils (same as sad)
+    } else {
+        if (SfInRect(x, y, 44, 133, 120, 138) || SfInRect(x, y, 120, 133, 196, 138))
+            c = kSfWhite;                                               // closed-eye slits
+    }
+    if (SfInRect(x, y, 50, 88, 114, 93) || SfInRect(x, y, 126, 88, 190, 93))
+        c = kSfBlack;                                                   // level (neutral) brows
+    if (SfInRect(x, y, 98, 229, 142, 235))
+        c = kSfWhite;                                                   // straight mouth
     return c;
 }
 
-// Plays the 3-frame tear-drop animation for a few loops, then returns.
-void RunSadFaceTest(esp_lcd_panel_handle_t panel) {
+// Sad face with a tear at (tear_y, tear_r). Shapes applied in paint order;
+// later ones sit on top (eyes, pupils, brows, mouth, eraser, tear).
+inline uint16_t SfSadPixel(int x, int y, int tear_y, int tear_r) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                   // eyes
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                   // pupils looking down
+    if (SfInTri(x, y, 36, 96, 124, 126, 124, 96) ||                    // brows, slant to centre
+        SfInTri(x, y, 204, 96, 116, 126, 116, 96))
+        c = kSfBlack;
+    if (SfInCircle(x, y, 120, 235, 22))
+        c = kSfWhite;                                                   // mouth
+    if (SfInCircle(x, y, 120, 228, 24))
+        c = kSfBlack;                                                   // eraser above -> frown
+    if (SfInCircle(x, y, 158, tear_y, tear_r))
+        c = kSfWhite;                                                   // tear
+    return c;
+}
+
+// Inverse rotation: screen pixel -> design pixel.
+inline void SfScreenToDesign(int sx, int sy, int* dx, int* dy) {
+    if (kSfRotate == 1) {
+        *dx = kSfCx - (sy - kSfCy);
+        *dy = kSfCy + (sx - kSfCx);
+    } else if (kSfRotate == -1) {
+        *dx = kSfCx + (sy - kSfCy);
+        *dy = kSfCy - (sx - kSfCx);
+    } else {
+        *dx = sx;
+        *dy = sy;
+    }
+}
+
+// Forward rotation: design point -> screen point.
+inline void SfDesignToScreen(int dx, int dy, int* sx, int* sy) {
+    if (kSfRotate == 1) {
+        *sx = kSfCx + (dy - kSfCy);
+        *sy = kSfCy - (dx - kSfCx);
+    } else if (kSfRotate == -1) {
+        *sx = kSfCx - (dy - kSfCy);
+        *sy = kSfCy + (dx - kSfCx);
+    } else {
+        *sx = dx;
+        *sy = dy;
+    }
+}
+
+// Screen-space bounding box of a design rectangle under the current rotation,
+// expanded by `margin`.
+inline void SfDesignRectToScreen(int dx0, int dy0, int dx1, int dy1, int margin,
+                                 int* sx0, int* sy0, int* sx1, int* sy1) {
+    int xs[4], ys[4];
+    SfDesignToScreen(dx0, dy0, &xs[0], &ys[0]);
+    SfDesignToScreen(dx1, dy0, &xs[1], &ys[1]);
+    SfDesignToScreen(dx0, dy1, &xs[2], &ys[2]);
+    SfDesignToScreen(dx1, dy1, &xs[3], &ys[3]);
+    int minx = xs[0], maxx = xs[0], miny = ys[0], maxy = ys[0];
+    for (int i = 1; i < 4; i++) {
+        if (xs[i] < minx) minx = xs[i];
+        if (xs[i] > maxx) maxx = xs[i];
+        if (ys[i] < miny) miny = ys[i];
+        if (ys[i] > maxy) maxy = ys[i];
+    }
+    *sx0 = minx - margin;
+    *sy0 = miny - margin;
+    *sx1 = maxx + margin + 1;
+    *sy1 = maxy + margin + 1;
+}
+
+// Paint the whole frame into fb (screen space) and send it in one transfer.
+// Used only for the one-time appearance of each face.
+template <class PixelFn>
+void SfBlitFull(uint16_t* fb, esp_lcd_panel_handle_t panel, PixelFn pixel) {
+    for (int y = 0; y < kSfH; y++) {
+        for (int x = 0; x < kSfW; x++) {
+            int dx, dy;
+            SfScreenToDesign(x, y, &dx, &dy);
+            fb[y * kSfW + x] = pixel(dx, dy);
+        }
+    }
+    esp_lcd_panel_draw_bitmap(panel, 0, 0, kSfW, kSfH, fb);
+}
+
+// Paint only a screen rectangle into buf (packed) and send just that rectangle.
+// Used for small dirty updates so the rest of the screen is never rewritten ->
+// no flash/tearing between frames.
+template <class PixelFn>
+void SfBlitRect(uint16_t* buf, esp_lcd_panel_handle_t panel,
+                int sx0, int sy0, int sx1, int sy1, PixelFn pixel) {
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > kSfW) sx1 = kSfW;
+    if (sy1 > kSfH) sy1 = kSfH;
+    int w = sx1 - sx0;
+    int h = sy1 - sy0;
+    if (w <= 0 || h <= 0) return;
+    for (int row = 0; row < h; row++) {
+        int sy = sy0 + row;
+        for (int sx = sx0; sx < sx1; sx++) {
+            int dx, dy;
+            SfScreenToDesign(sx, sy, &dx, &dy);
+            buf[row * w + (sx - sx0)] = pixel(dx, dy);
+        }
+    }
+    esp_lcd_panel_draw_bitmap(panel, sx0, sy0, sx1, sy1, buf);
+}
+
+// Shows both faces at boot (normal with a blink, then the sad tear animation),
+// before LVGL takes over the panel. Each face is drawn once in full; afterwards
+// only the changing region (eyes for the blink, tear for the drop) is updated,
+// so the screen does not flash between frames.
+void RunFaceTest(esp_lcd_panel_handle_t panel) {
     // Backlight is normally enabled later in Start(); turn it on now so the
     // boot animation is actually visible while it plays.
     if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
@@ -103,43 +213,65 @@ void RunSadFaceTest(esp_lcd_panel_handle_t panel) {
     }
     esp_lcd_panel_disp_on_off(panel, true);
 
-    const int kFrames = 3;
-    const int kLoops = 3;
+    uint16_t* fb = (uint16_t*)heap_caps_malloc((size_t)kSfW * kSfH * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (!fb) {
+        ESP_LOGW(TAG, "face: no DMA RAM for framebuffer, skipping face test");
+        return;
+    }
+
+    // Screen rectangle covering both eyes (open or closed): the only region
+    // that changes during a blink.
+    int ex0, ey0, ex1, ey1;
+    SfDesignRectToScreen(42, 95, 198, 175, 2, &ex0, &ey0, &ex1, &ey1);
+
+    // Normal face: full draw (eyes open) once, then blink only the eye region.
+    ESP_LOGI(TAG, "face: normal (blinking)");
+    SfBlitFull(fb, panel, [](int x, int y) { return SfNormalPixel(x, y, true); });
+    for (int b = 0; b < 3; b++) {
+        vTaskDelay(pdMS_TO_TICKS(800));
+        SfBlitRect(fb, panel, ex0, ey0, ex1, ey1,
+                   [](int x, int y) { return SfNormalPixel(x, y, false); });  // close
+        vTaskDelay(pdMS_TO_TICKS(120));
+        SfBlitRect(fb, panel, ex0, ey0, ex1, ey1,
+                   [](int x, int y) { return SfNormalPixel(x, y, true); });   // open
+    }
+    vTaskDelay(pdMS_TO_TICKS(700));
+
+    // Sad face: full draw (tear at frame 0) once, then only the tear's region
+    // is updated each frame.
     const struct {
         int y, r;
-    } frames[kFrames] = {{184, 7}, {210, 9}, {236, 10}};
+    } frames[3] = {{184, 7}, {210, 9}, {236, 10}};
+    ESP_LOGI(TAG, "face: sad (tear animation)");
+    SfBlitFull(fb, panel, [&](int x, int y) { return SfSadPixel(x, y, frames[0].y, frames[0].r); });
 
-    ESP_LOGI(TAG, "sadface: playing boot animation");
-    for (int loop = 0; loop < kLoops; loop++) {
-        for (int f = 0; f < kFrames; f++) {
+    int shown_ty = frames[0].y, shown_tr = frames[0].r;
+    for (int loop = 0; loop < 3; loop++) {
+        for (int f = 0; f < 3; f++) {
             int ty = frames[f].y, tr = frames[f].r;
-            for (int y0 = 0; y0 < kSfH; y0 += kSfStripH) {
-                int h = (y0 + kSfStripH <= kSfH) ? kSfStripH : (kSfH - y0);
-                for (int row = 0; row < h; row++) {
-                    int sy = y0 + row;
-                    for (int sx = 0; sx < kSfW; sx++) {
-                        int dx, dy;
-                        if (kSfRotate == 1) {        // face 90 CW: sample design = R_CCW(screen)
-                            dx = kSfCx - (sy - kSfCy);
-                            dy = kSfCy + (sx - kSfCx);
-                        } else if (kSfRotate == -1) { // 90 CCW
-                            dx = kSfCx + (sy - kSfCy);
-                            dy = kSfCy - (sx - kSfCx);
-                        } else {
-                            dx = sx;
-                            dy = sy;
-                        }
-                        s_strip[row * kSfW + sx] = SfPixel(dx, dy, ty, tr);
-                    }
-                }
-                esp_lcd_panel_draw_bitmap(panel, 0, y0, kSfW, y0 + h, s_strip);
+            if (ty != shown_ty || tr != shown_tr) {
+                int px0, py0, px1, py1, cx0, cy0, cx1, cy1;
+                SfDesignRectToScreen(158 - shown_tr, shown_ty - shown_tr, 158 + shown_tr,
+                                     shown_ty + shown_tr, 1, &px0, &py0, &px1, &py1);
+                SfDesignRectToScreen(158 - tr, ty - tr, 158 + tr, ty + tr, 1,
+                                     &cx0, &cy0, &cx1, &cy1);
+                int sx0 = px0 < cx0 ? px0 : cx0;
+                int sy0 = py0 < cy0 ? py0 : cy0;
+                int sx1 = px1 > cx1 ? px1 : cx1;
+                int sy1 = py1 > cy1 ? py1 : cy1;
+                SfBlitRect(fb, panel, sx0, sy0, sx1, sy1,
+                           [ty, tr](int x, int y) { return SfSadPixel(x, y, ty, tr); });
+                shown_ty = ty;
+                shown_tr = tr;
             }
             vTaskDelay(pdMS_TO_TICKS(300));
         }
     }
+
+    heap_caps_free(fb);
 }
 }  // namespace
-#endif  // WATCH_ENABLE_SADFACE_TEST
+#endif  // WATCH_ENABLE_FACES_TEST
 
 class WatchInterfaceBoard : public WifiBoard {
 private:
@@ -219,9 +351,9 @@ private:
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
 
-#if WATCH_ENABLE_SADFACE_TEST
-        // Play the sad-face animation before LVGL takes over the panel.
-        RunSadFaceTest(panel);
+#if WATCH_ENABLE_FACES_TEST
+        // Show both boot faces before LVGL takes over the panel.
+        RunFaceTest(panel);
 #endif
 
         display_ = new SpiLcdDisplay(panel_io, panel,
