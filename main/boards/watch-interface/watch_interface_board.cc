@@ -361,14 +361,79 @@ inline uint16_t SfSweatPixel(int x, int y) {
 // Razz / tongue-out face: squinting eyes and a tongue poking below the mouth.
 inline uint16_t SfTonguePixel(int x, int y) {
     uint16_t c = kSfBlack;
-    if (SfInRect(x, y, 44, 133, 120, 138) || SfInRect(x, y, 120, 133, 196, 138))
-        c = kSfWhite;                                                   // squinting eye slits
+    if (SfInRect(x, y, 50, 133, 112, 138) || SfInRect(x, y, 128, 133, 190, 138))
+        c = kSfWhite;                                                   // squinting eye slits (gap between)
     if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
         c = kSfBlack;                                                   // raised playful brows
     if (SfInRect(x, y, 96, 222, 144, 227))
         c = kSfWhite;                                                   // mouth line
     if (SfInRect(x, y, 104, 227, 136, 250))
         c = kSfWhite;                                                   // tongue poking out
+    return c;
+}
+
+
+// Grin / beaming face: open eyes, raised brows and a big grin with a tooth line.
+inline uint16_t SfGrinPixel(int x, int y) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                   // eyes (same layout)
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                   // pupils
+    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
+        c = kSfBlack;                                                   // raised (happy) brows
+    if (SfInCircle(x, y, 120, 224, 32))
+        c = kSfWhite;                                                   // bigger grin base
+    if (SfInRect(x, y, 80, 192, 160, 224))
+        c = kSfBlack;                                                   // erase top -> open grin
+    if (SfInRect(x, y, 88, 222, 152, 226))
+        c = kSfBlack;                                                   // tooth line
+    return c;
+}
+
+// Unamused face: side-eye (pupils shifted right), level brows, a small flat mouth.
+inline uint16_t SfUnamusedPixel(int x, int y) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                   // eyes (same layout)
+    if (SfInCircle(x, y, 94, 135, 15) || SfInCircle(x, y, 170, 135, 15))
+        c = kSfBlack;                                                   // pupils shifted right -> side-eye
+    if (SfInRect(x, y, 50, 88, 114, 93) || SfInRect(x, y, 126, 88, 190, 93))
+        c = kSfBlack;                                                   // level (lowered) brows
+    if (SfInRect(x, y, 92, 235, 148, 240))
+        c = kSfWhite;                                                   // small flat mouth
+    return c;
+}
+
+// Pensive / uncertain face: a gentle furrowed brow and a small flat mouth.
+inline uint16_t SfPensivePixel(int x, int y) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                   // eyes (same layout)
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                   // pupils
+    if (SfInTri(x, y, 44, 90, 114, 112, 114, 90) ||                    // gentle furrow, soft toward centre
+        SfInTri(x, y, 196, 90, 126, 112, 126, 90))
+        c = kSfBlack;
+    if (SfInRect(x, y, 100, 233, 140, 238))
+        c = kSfWhite;                                                   // small flat mouth
+    return c;
+}
+
+// Disappointed face: downcast eyes, disappointed brows and a big frown (no tear).
+inline uint16_t SfDisappointedPixel(int x, int y) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                   // eyes (same layout)
+    if (SfInCircle(x, y, 82, 158, 15) || SfInCircle(x, y, 158, 158, 15))
+        c = kSfBlack;                                                   // pupils looking down
+    if (SfInTri(x, y, 40, 84, 120, 116, 120, 84) ||                    // disappointed brows, outer high -> inner low
+        SfInTri(x, y, 200, 84, 120, 116, 120, 84))
+        c = kSfBlack;
+    if (SfInCircle(x, y, 120, 240, 26))
+        c = kSfWhite;                                                   // big frown base
+    if (SfInCircle(x, y, 120, 233, 28))
+        c = kSfBlack;                                                   // erase top -> big frown
     return c;
 }
 
@@ -447,7 +512,8 @@ public:
 private:
     enum Face { kNormal, kSad, kComplete, kScared, kRemind, kSleep,
                 kAngry, kFlat, kLove, kCool, kWink,
-                kLaugh, kDead, kStar, kSweat, kTongue };
+                kLaugh, kDead, kStar, kSweat, kTongue,
+                kGrin, kUnamused, kPensive, kDisappointed };
 
     static Face FaceForEmotion(const char* emotion) {
         if (emotion == nullptr) return kNormal;
@@ -484,6 +550,14 @@ private:
             return kSweat;
         if (strcmp(emotion, "razz") == 0 || strcmp(emotion, "tongue") == 0)
             return kTongue;
+        if (strcmp(emotion, "grin") == 0)
+            return kGrin;
+        if (strcmp(emotion, "unamused") == 0)
+            return kUnamused;
+        if (strcmp(emotion, "pensive") == 0)
+            return kPensive;
+        if (strcmp(emotion, "disappointed") == 0)
+            return kDisappointed;
         return kNormal;  // "neutral" + anything unknown
     }
 
@@ -519,6 +593,10 @@ private:
             case kStar:     return SfStarPixel(dx, dy);           // sparkle eyes + grin
             case kSweat:    return SfSweatPixel(dx, dy);          // worried + sweat drop
             case kTongue:   return SfTonguePixel(dx, dy);         // tongue out
+            case kGrin:     return SfGrinPixel(dx, dy);           // beaming grin + teeth
+            case kUnamused: return SfUnamusedPixel(dx, dy);       // side-eye + flat mouth
+            case kPensive:  return SfPensivePixel(dx, dy);        // gentle furrow + small mouth
+            case kDisappointed: return SfDisappointedPixel(dx, dy); // downcast + big frown
             case kNormal:
             default:        return SfNormalPixel(dx, dy, true);   // eyes open
         }
@@ -635,6 +713,7 @@ private:
             "surprised", "thinking", "sleepy", "loving", "cool",
             "winking", "expressionless",
             "funny", "dizzy", "star", "worried", "razz",
+            "grin", "unamused", "pensive", "disappointed",
         };
         ESP_LOGI(TAG, "face test (LVGL): cycling %zu faces",
                  sizeof(kFaces) / sizeof(kFaces[0]));
