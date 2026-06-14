@@ -1,6 +1,7 @@
 #include "clock_manager.h"
 #include "application.h"
 #include "board.h"
+#include "display.h"
 #include "assets/lang_config.h"
 
 #include <esp_timer.h>
