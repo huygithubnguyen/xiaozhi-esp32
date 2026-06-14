@@ -177,6 +177,24 @@ inline uint16_t SfRemindPixel(int x, int y, bool show_dot) {
     return c;
 }
 
+// Sleep face: closed eyes, relaxed (droopy) brows, a peaceful mouth, and Zzz
+// dots. show_zzz toggles the dots (the sleep animation).
+inline uint16_t SfSleepPixel(int x, int y, bool show_zzz) {
+    uint16_t c = kSfBlack;
+    if (SfInRect(x, y, 44, 133, 120, 138) || SfInRect(x, y, 120, 133, 196, 138))
+        c = kSfWhite;                                                  // closed eyes (slits)
+    if (SfInRect(x, y, 50, 92, 114, 97) || SfInRect(x, y, 126, 92, 190, 97))
+        c = kSfBlack;                                                  // relaxed brows
+    if (SfInRect(x, y, 104, 234, 136, 239))
+        c = kSfWhite;                                                  // peaceful mouth
+    if (show_zzz) {
+        if (SfInCircle(x, y, 208, 90, 7)) c = kSfWhite;              // Z
+        if (SfInCircle(x, y, 216, 76, 6)) c = kSfWhite;             // z
+        if (SfInCircle(x, y, 224, 64, 5)) c = kSfWhite;             // z
+    }
+    return c;
+}
+
 // Inverse rotation: screen pixel -> design pixel.
 inline void SfScreenToDesign(int sx, int sy, int* dx, int* dy) {
     if (kSfRotate == 1) {
@@ -373,6 +391,21 @@ void RunFaceTest(esp_lcd_panel_handle_t panel) {
         vTaskDelay(pdMS_TO_TICKS(350));
         SfBlitRect(fb, panel, bx0, by0, bx1, by1,
                    [](int x, int y) { return SfRemindPixel(x, y, false); });  // dot off
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Sleep face: full draw, then the Zzz dots pulse slowly.
+    int zx0, zy0, zx1, zy1;
+    SfDesignRectToScreen(200, 56, 230, 100, 1, &zx0, &zy0, &zx1, &zy1);
+    ESP_LOGI(TAG, "face: sleep (Zzz)");
+    SfBlitFull(fb, panel, [](int x, int y) { return SfSleepPixel(x, y, false); });
+    for (int s = 0; s < 4; s++) {
+        vTaskDelay(pdMS_TO_TICKS(600));
+        SfBlitRect(fb, panel, zx0, zy0, zx1, zy1,
+                   [](int x, int y) { return SfSleepPixel(x, y, true); });   // Zzz on
+        vTaskDelay(pdMS_TO_TICKS(600));
+        SfBlitRect(fb, panel, zx0, zy0, zx1, zy1,
+                   [](int x, int y) { return SfSleepPixel(x, y, false); });  // Zzz off
     }
     vTaskDelay(pdMS_TO_TICKS(500));
 
