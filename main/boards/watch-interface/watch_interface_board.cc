@@ -112,6 +112,23 @@ inline uint16_t SfSadPixel(int x, int y, int tear_y, int tear_r) {
     return c;
 }
 
+// Complete face = happy expression: same eyes/pupils as the other faces, but
+// raised brows and a big open smile, so it is distinct from normal and sad.
+inline uint16_t SfCompletePixel(int x, int y) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                  // eyes (same layout)
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                  // pupils (same layout)
+    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
+        c = kSfBlack;                                                  // raised (happy) brows
+    if (SfInCircle(x, y, 120, 222, 28))
+        c = kSfWhite;                                                  // smile base
+    if (SfInRect(x, y, 84, 194, 156, 222))
+        c = kSfBlack;                                                  // erase top half -> open grin
+    return c;
+}
+
 // Inverse rotation: screen pixel -> design pixel.
 inline void SfScreenToDesign(int sx, int sy, int* dx, int* dy) {
     if (kSfRotate == 1) {
@@ -218,6 +235,11 @@ void RunFaceTest(esp_lcd_panel_handle_t panel) {
         ESP_LOGW(TAG, "face: no DMA RAM for framebuffer, skipping face test");
         return;
     }
+
+    // Complete face: draw once and hold.
+    ESP_LOGI(TAG, "face: complete");
+    SfBlitFull(fb, panel, [](int x, int y) { return SfCompletePixel(x, y); });
+    vTaskDelay(pdMS_TO_TICKS(3000));
 
     // Screen rectangle covering both eyes (open or closed): the only region
     // that changes during a blink.
