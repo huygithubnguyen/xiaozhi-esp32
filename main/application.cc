@@ -10,6 +10,7 @@
 #include "assets.h"
 #include "settings.h"
 
+#include <cctype>
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
@@ -18,6 +19,23 @@
 #include <font_awesome.h>
 
 #define TAG "Application"
+
+
+// User utterance that ends the conversation: "ok"/"okay"/"oke". Matches the
+// whole phrase (punctuation trimmed) so "ok, now check X" won't tear it down.
+static bool IsConversationStopPhrase(const std::string& text) {
+    std::string s = text;
+    for (auto& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    size_t begin = 0;
+    while (begin < s.size() && !std::isalnum(static_cast<unsigned char>(s[begin]))) ++begin;
+    size_t end = s.size();
+    while (end > begin && !std::isalnum(static_cast<unsigned char>(s[end - 1]))) --end;
+    return s.compare(begin, end - begin, "ok") == 0
+        || s.compare(begin, end - begin, "okay") == 0
+        || s.compare(begin, end - begin, "oke") == 0;
+}
 
 
 Application::Application() {
@@ -551,9 +569,20 @@ void Application::InitializeProtocol() {
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
-                Schedule([display, message = std::string(text->valuestring)]() {
+                std::string transcript = text->valuestring;
+                Schedule([display, message = transcript]() {
                     display->SetChatMessage("user", message.c_str());
                 });
+                // "Ok" -> hard-end the conversation now
+                if (IsConversationStopPhrase(transcript)) {
+                    ESP_LOGI(TAG, "stop phrase detected — hard-ending conversation");
+                    Schedule([this]() {
+                        AbortSpeaking(kAbortReasonNone);
+                        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel(false);
+                        }
+                    });
+                }
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");

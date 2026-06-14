@@ -13,7 +13,7 @@
                 "CONFIG_PARTITION_TABLE_FILENAME=\"partitions/v2/8m.csv\"",
                 "CONFIG_FLASH_DEFAULT_ASSETS=y",
                 "CONFIG_USE_AFE_WAKE_WORD=y",
-                "CONFIG_SR_WN_WN9_JARVIS_TTS=y",
+                "CONFIG_SR_WN_WN9_HIJOY_TTS=y",
                 "CONFIG_SPIRAM=y",
                 "CONFIG_SPIRAM_MODE_QUAD=y",
                 "# CONFIG_SPIRAM_MODE_OCT is not set",
