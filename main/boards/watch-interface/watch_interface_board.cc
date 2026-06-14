@@ -158,6 +158,25 @@ inline uint16_t SfScaredPixel(int x, int y, bool big) {
     return c;
 }
 
+// Remind face: one raised brow (the "hmm?" look), a small off-centre mouth,
+// and a notification dot. show_dot toggles the dot (the pulse animation).
+inline uint16_t SfRemindPixel(int x, int y, bool show_dot) {
+    uint16_t c = kSfBlack;
+    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
+        c = kSfWhite;                                                  // eyes (same layout)
+    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
+        c = kSfBlack;                                                  // pupils (same layout)
+    if (SfInRect(x, y, 50, 80, 114, 85))
+        c = kSfBlack;                                                  // left brow raised
+    if (SfInRect(x, y, 126, 88, 190, 93))
+        c = kSfBlack;                                                  // right brow level
+    if (SfInRect(x, y, 128, 230, 172, 236))
+        c = kSfWhite;                                                  // small mouth, offset right
+    if (show_dot && SfInCircle(x, y, 210, 110, 12))
+        c = kSfWhite;                                                  // notification dot
+    return c;
+}
+
 // Inverse rotation: screen pixel -> design pixel.
 inline void SfScreenToDesign(int sx, int sy, int* dx, int* dy) {
     if (kSfRotate == 1) {
@@ -339,6 +358,21 @@ void RunFaceTest(esp_lcd_panel_handle_t panel) {
         vTaskDelay(pdMS_TO_TICKS(280));
         SfBlitRect(fb, panel, mx0, my0, mx1, my1,
                    [](int x, int y) { return SfScaredPixel(x, y, false); });  // small
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Remind face: full draw, then the notification dot pulses a few times.
+    int bx0, by0, bx1, by1;
+    SfDesignRectToScreen(196, 96, 224, 124, 1, &bx0, &by0, &bx1, &by1);
+    ESP_LOGI(TAG, "face: remind (pulsing dot)");
+    SfBlitFull(fb, panel, [](int x, int y) { return SfRemindPixel(x, y, false); });
+    for (int r = 0; r < 4; r++) {
+        vTaskDelay(pdMS_TO_TICKS(350));
+        SfBlitRect(fb, panel, bx0, by0, bx1, by1,
+                   [](int x, int y) { return SfRemindPixel(x, y, true); });   // dot on
+        vTaskDelay(pdMS_TO_TICKS(350));
+        SfBlitRect(fb, panel, bx0, by0, bx1, by1,
+                   [](int x, int y) { return SfRemindPixel(x, y, false); });  // dot off
     }
     vTaskDelay(pdMS_TO_TICKS(500));
 
