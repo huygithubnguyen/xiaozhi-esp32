@@ -644,16 +644,16 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
         const std::string_view& sound;
     };
     static const std::array<digit_sound, 10> digit_sounds{{
-        digit_sound{'0', Lang::Sounds::OGG_0},
-        digit_sound{'1', Lang::Sounds::OGG_1}, 
-        digit_sound{'2', Lang::Sounds::OGG_2},
-        digit_sound{'3', Lang::Sounds::OGG_3},
-        digit_sound{'4', Lang::Sounds::OGG_4},
-        digit_sound{'5', Lang::Sounds::OGG_5},
-        digit_sound{'6', Lang::Sounds::OGG_6},
-        digit_sound{'7', Lang::Sounds::OGG_7},
-        digit_sound{'8', Lang::Sounds::OGG_8},
-        digit_sound{'9', Lang::Sounds::OGG_9}
+        digit_sound{'0', Lang::Sounds::OGG__0},
+        digit_sound{'1', Lang::Sounds::OGG__1},
+        digit_sound{'2', Lang::Sounds::OGG__2},
+        digit_sound{'3', Lang::Sounds::OGG__3},
+        digit_sound{'4', Lang::Sounds::OGG__4},
+        digit_sound{'5', Lang::Sounds::OGG__5},
+        digit_sound{'6', Lang::Sounds::OGG__6},
+        digit_sound{'7', Lang::Sounds::OGG__7},
+        digit_sound{'8', Lang::Sounds::OGG__8},
+        digit_sound{'9', Lang::Sounds::OGG__9}
     }};
 
     // This sentence uses 9KB of SRAM, so we need to wait for it to finish

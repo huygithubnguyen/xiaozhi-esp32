@@ -6,7 +6,7 @@
             "sdkconfig_append": [
                 "CONFIG_BOARD_TYPE_WATCH_INTERFACE=y",
                 "CONFIG_LANGUAGE_VI_VN=y",
-                "CONFIG_LCD_ILI9341_240X320=y",
+                "CONFIG_OLED_SH1106_128X64=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE=\"8MB\"",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/8m.csv\"",

@@ -50,6 +50,15 @@ def get_sound_files(directory):
         return []
     return [f for f in os.listdir(directory) if f.endswith('.ogg')]
 
+def sanitize_c_identifier(name):
+    """将文件名转换为有效的C标识符：替换连字符为下划线，处理数字开头"""
+    # Replace hyphens with underscores
+    sanitized = name.replace('-', '_')
+    # If it starts with a digit, prepend an underscore
+    if sanitized and sanitized[0].isdigit():
+        sanitized = '_' + sanitized
+    return sanitized
+
 def generate_header(lang_code, output_path):
     # 从输出路径推导项目结构
     # output_path 通常是 main/assets/lang_config.h
@@ -114,6 +123,8 @@ def generate_header(lang_code, output_path):
     base_sounds = get_sound_files(base_lang_dir)
     current_sounds = get_sound_files(current_lang_dir)
     common_sounds = get_sound_files(common_dir)
+    custom_notify_dir = os.path.join(common_dir, 'custom-notify')
+    common_sounds.extend(get_sound_files(custom_notify_dir))
     
     # 合并音效文件列表：用户语言覆盖基准语言
     all_sound_files = set(base_sounds)
@@ -140,24 +151,29 @@ def generate_header(lang_code, output_path):
             sound_lang = lang_code.replace('-', '_').lower()
         else:
             sound_lang = 'en_us'
-            
+
+        # Sanitize the filename for C identifiers
+        c_name = sanitize_c_identifier(base_name)
+
         sounds.append(f'''
-        extern const char ogg_{base_name}_start[] asm("_binary_{base_name}_ogg_start");
-        extern const char ogg_{base_name}_end[] asm("_binary_{base_name}_ogg_end");
-        static const std::string_view OGG_{base_name.upper()} {{
-        static_cast<const char*>(ogg_{base_name}_start),
-        static_cast<size_t>(ogg_{base_name}_end - ogg_{base_name}_start)
+        extern const char ogg_{c_name}_start[] asm("_binary_{base_name}_ogg_start");
+        extern const char ogg_{c_name}_end[] asm("_binary_{base_name}_ogg_end");
+        static const std::string_view OGG_{c_name.upper()} {{
+        static_cast<const char*>(ogg_{c_name}_start),
+        static_cast<size_t>(ogg_{c_name}_end - ogg_{c_name}_start)
         }};''')
     
     # 生成公共音效常量
     for file in sorted(common_sounds):
         base_name = os.path.splitext(file)[0]
+        # Sanitize the filename for C identifiers
+        c_name = sanitize_c_identifier(base_name)
         sounds.append(f'''
-        extern const char ogg_{base_name}_start[] asm("_binary_{base_name}_ogg_start");
-        extern const char ogg_{base_name}_end[] asm("_binary_{base_name}_ogg_end");
-        static const std::string_view OGG_{base_name.upper()} {{
-        static_cast<const char*>(ogg_{base_name}_start),
-        static_cast<size_t>(ogg_{base_name}_end - ogg_{base_name}_start)
+        extern const char ogg_{c_name}_start[] asm("_binary_{base_name}_ogg_start");
+        extern const char ogg_{c_name}_end[] asm("_binary_{base_name}_ogg_end");
+        static const std::string_view OGG_{c_name.upper()} {{
+        static_cast<const char*>(ogg_{c_name}_start),
+        static_cast<size_t>(ogg_{c_name}_end - ogg_{c_name}_start)
         }};''')
 
     # 填充模板

@@ -1,6 +1,6 @@
 #include "wifi_board.h"
 #include "codecs/no_audio_codec.h"
-#include "display/lcd_display.h"
+#include "display/oled_display.h"
 #include "system_reset.h"
 #include "application.h"
 #include "button.h"
@@ -14,7 +14,6 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/gpio.h>
-#include <driver/spi_common.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
@@ -27,585 +26,22 @@
 #include <cstring>
 #include <esp_heap_caps.h>
 
-#if defined(LCD_TYPE_ILI9341_SERIAL)
-#include "esp_lcd_ili9341.h"
+#if defined(LCD_TYPE_SH1106)
+#include "esp_lcd_panel_sh1106.h"
 #endif
 
 #define TAG "WatchInterfaceBoard"
 
 // =============================================================================
-// Boot face test (ILI9341 240x320). Cycles every procedural face through the
-// LVGL canvas (the same render path the runtime uses) at boot, so the LCD is
-// verified through LVGL's flush rather than a raw panel write.
-// Set to 0 to disable once the LCD is verified.
+// Boot face test (SH1106 OLED 128x64). Cycles faces through the OLED display
+// at boot to verify the display is working.
+// Set to 0 to disable once the OLED is verified.
 // =============================================================================
-#define WATCH_ENABLE_FACES_TEST 1
-
-// Face rendering primitives are always compiled: WatchFaceLcdDisplay uses them at
-// runtime, and the boot test (RunFaceTest) is still gated by the macro above.
-namespace {
-constexpr int kSfW = DISPLAY_WIDTH;
-constexpr int kSfH = DISPLAY_HEIGHT;
-constexpr uint16_t kSfBlack = 0x0000;
-constexpr uint16_t kSfWhite = 0xFFFF;
-
-// Rotation applied to the face on screen: 0 = upright, 1 = 90 CW, -1 = 90 CCW.
-constexpr int kSfRotate = 1;
-constexpr int kSfCx = kSfW / 2;   // rotation centre (120, 160)
-constexpr int kSfCy = kSfH / 2;
-
-inline bool SfInCircle(int x, int y, int cx, int cy, int r) {
-    int dx = x - cx, dy = y - cy;
-    return dx * dx + dy * dy <= r * r;
-}
-
-inline bool SfInRect(int x, int y, int x0, int y0, int x1, int y1) {
-    return x >= x0 && x <= x1 && y >= y0 && y <= y1;
-}
-
-inline int SfEdge(int ax, int ay, int bx, int by, int px, int py) {
-    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
-}
-
-inline bool SfInTri(int x, int y, int ax, int ay, int bx, int by, int cx, int cy) {
-    int e1 = SfEdge(ax, ay, bx, by, x, y);
-    int e2 = SfEdge(bx, by, cx, cy, x, y);
-    int e3 = SfEdge(cx, cy, ax, ay, x, y);
-    return (e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0);
-}
-
-// Heart shape (two lobes + a downward point) used by the love face.
-inline bool SfInHeart(int x, int y, int cx, int cy, int s) {
-    if (SfInCircle(x, y, cx - s / 2, cy - s / 3, s * 3 / 4)) return true;   // left lobe
-    if (SfInCircle(x, y, cx + s / 2, cy - s / 3, s * 3 / 4)) return true;   // right lobe
-    if (SfInTri(x, y, cx - s, cy - s / 4, cx + s, cy - s / 4, cx, cy + s)) return true;  // point
-    return false;
-}
-
-// Diamond (rotated square) used for sparkle / star eyes.
-inline bool SfInDiamond(int x, int y, int cx, int cy, int r) {
-    int ax = x - cx; if (ax < 0) ax = -ax;
-    int ay = y - cy; if (ay < 0) ay = -ay;
-    return ax + ay <= r;
-}
-
-// Normal / neutral face: level brows, straight mouth. Eyes/pupils use the same
-// coordinates as the sad face so the eye layout is identical between the two.
-// eyes_open = false draws closed-eye slits (used for the blink).
-inline uint16_t SfNormalPixel(int x, int y, bool eyes_open) {
-    uint16_t c = kSfBlack;
-    if (eyes_open) {
-        if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-            c = kSfWhite;                                               // eyes (same as sad)
-        if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-            c = kSfBlack;                                               // pupils (same as sad)
-    } else {
-        if (SfInRect(x, y, 44, 133, 120, 138) || SfInRect(x, y, 120, 133, 196, 138))
-            c = kSfWhite;                                               // closed-eye slits
-    }
-    if (SfInRect(x, y, 50, 88, 114, 93) || SfInRect(x, y, 126, 88, 190, 93))
-        c = kSfBlack;                                                   // level (neutral) brows
-    if (SfInRect(x, y, 98, 229, 142, 235))
-        c = kSfWhite;                                                   // straight mouth
-    return c;
-}
-
-// Sad face with a tear at (tear_y, tear_r). Shapes applied in paint order;
-// later ones sit on top (eyes, pupils, brows, mouth, eraser, tear).
-inline uint16_t SfSadPixel(int x, int y, int tear_y, int tear_r) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                   // pupils looking down
-    if (SfInTri(x, y, 36, 96, 124, 126, 124, 96) ||                    // brows, slant to centre
-        SfInTri(x, y, 204, 96, 116, 126, 116, 96))
-        c = kSfBlack;
-    if (SfInCircle(x, y, 120, 235, 22))
-        c = kSfWhite;                                                   // mouth
-    if (SfInCircle(x, y, 120, 228, 24))
-        c = kSfBlack;                                                   // eraser above -> frown
-    if (SfInCircle(x, y, 158, tear_y, tear_r))
-        c = kSfWhite;                                                   // tear
-    return c;
-}
-
-// Complete face = happy expression. wink: 0 = both eyes open, 1 = left closed,
-// 2 = right closed (the wink animation).
-inline uint16_t SfCompletePixel(int x, int y, int wink) {
-    uint16_t c = kSfBlack;
-    if (wink == 1) {
-        if (SfInRect(x, y, 44, 133, 120, 138))
-            c = kSfWhite;                                              // left wink (slit)
-    } else {
-        if (SfInCircle(x, y, 82, 135, 38)) c = kSfWhite;             // left eye open
-        if (SfInCircle(x, y, 82, 150, 15)) c = kSfBlack;             // left pupil
-    }
-    if (wink == 2) {
-        if (SfInRect(x, y, 120, 133, 196, 138))
-            c = kSfWhite;                                              // right wink (slit)
-    } else {
-        if (SfInCircle(x, y, 158, 135, 38)) c = kSfWhite;            // right eye open
-        if (SfInCircle(x, y, 158, 150, 15)) c = kSfBlack;            // right pupil
-    }
-    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
-        c = kSfBlack;                                                  // raised (happy) brows
-    if (SfInCircle(x, y, 120, 222, 28))
-        c = kSfWhite;                                                  // smile base
-    if (SfInRect(x, y, 84, 194, 156, 222))
-        c = kSfBlack;                                                  // erase top half -> open grin
-    return c;
-}
-
-// Scared face: same eyes/pupils, raised brows and a round "O" mouth. big =
-// true widens the mouth (the gasp animation).
-inline uint16_t SfScaredPixel(int x, int y, bool big) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                  // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                  // pupils (same layout)
-    if (SfInRect(x, y, 50, 74, 114, 79) || SfInRect(x, y, 126, 74, 190, 79))
-        c = kSfBlack;                                                  // raised (scared) brows
-    int ro = big ? 26 : 20;
-    int ri = big ? 15 : 11;
-    if (SfInCircle(x, y, 120, 225, ro))
-        c = kSfWhite;                                                  // open mouth outer
-    if (SfInCircle(x, y, 120, 225, ri))
-        c = kSfBlack;                                                  // hollow centre -> "O" gasp
-    return c;
-}
-
-// Remind face: one raised brow (the "hmm?" look), a small off-centre mouth,
-// and a notification dot. show_dot toggles the dot (the pulse animation).
-inline uint16_t SfRemindPixel(int x, int y, bool show_dot) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                  // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                  // pupils (same layout)
-    if (SfInRect(x, y, 50, 80, 114, 85))
-        c = kSfBlack;                                                  // left brow raised
-    if (SfInRect(x, y, 126, 88, 190, 93))
-        c = kSfBlack;                                                  // right brow level
-    if (SfInRect(x, y, 128, 230, 172, 236))
-        c = kSfWhite;                                                  // small mouth, offset right
-    if (show_dot && SfInCircle(x, y, 210, 110, 12))
-        c = kSfWhite;                                                  // notification dot
-    return c;
-}
-
-// Sleep face: closed eyes, relaxed (droopy) brows, a peaceful mouth, and Zzz
-// dots. show_zzz toggles the dots (the sleep animation).
-inline uint16_t SfSleepPixel(int x, int y, bool show_zzz) {
-    uint16_t c = kSfBlack;
-    if (SfInRect(x, y, 44, 133, 120, 138) || SfInRect(x, y, 120, 133, 196, 138))
-        c = kSfWhite;                                                  // closed eyes (slits)
-    if (SfInRect(x, y, 50, 92, 114, 97) || SfInRect(x, y, 126, 92, 190, 97))
-        c = kSfBlack;                                                  // relaxed brows
-    if (SfInRect(x, y, 104, 234, 136, 239))
-        c = kSfWhite;                                                  // peaceful mouth
-    if (show_zzz) {
-        if (SfInCircle(x, y, 208, 90, 7)) c = kSfWhite;              // Z
-        if (SfInCircle(x, y, 216, 76, 6)) c = kSfWhite;             // z
-        if (SfInCircle(x, y, 224, 64, 5)) c = kSfWhite;             // z
-    }
-    return c;
-}
-
-
-// Angry face: steep V-shaped brows (inner ends pulled down) over a frown.
-inline uint16_t SfAngryPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                   // pupils looking ahead
-    if (SfInTri(x, y, 44, 78, 114, 130, 114, 78) ||                    // angry brows, steep toward centre
-        SfInTri(x, y, 196, 78, 126, 130, 126, 78))
-        c = kSfBlack;
-    if (SfInCircle(x, y, 120, 235, 22))
-        c = kSfWhite;                                                   // frown base
-    if (SfInCircle(x, y, 120, 228, 24))
-        c = kSfBlack;                                                   // erase top -> frown
-    return c;
-}
-
-// Flat / expressionless face: droopy upper lids, no brow expression, straight mouth.
-inline uint16_t SfFlatPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                   // pupils
-    if (SfInRect(x, y, 44, 108, 120, 122) || SfInRect(x, y, 120, 108, 196, 122))
-        c = kSfBlack;                                                   // droopy upper lids (tired/blank)
-    if (SfInRect(x, y, 92, 233, 148, 238))
-        c = kSfWhite;                                                   // straight, slightly wider mouth
-    return c;
-}
-
-// Love face: heart eyes and a big open smile.
-inline uint16_t SfLovePixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInHeart(x, y, 82, 135, 16) || SfInHeart(x, y, 158, 135, 16))
-        c = kSfWhite;                                                   // heart eyes
-    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
-        c = kSfBlack;                                                   // raised (happy) brows
-    if (SfInCircle(x, y, 120, 222, 28))
-        c = kSfWhite;                                                   // smile base
-    if (SfInRect(x, y, 84, 194, 156, 222))
-        c = kSfBlack;                                                   // erase top half -> open grin
-    return c;
-}
-
-// Cool face: dark sunglasses over the eyes and a small smirk.
-inline uint16_t SfCoolPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eye rims (face behind shades)
-    if (SfInRect(x, y, 48, 118, 116, 156) || SfInRect(x, y, 124, 118, 192, 156))
-        c = kSfBlack;                                                   // dark lenses
-    if (SfInRect(x, y, 116, 128, 124, 138))
-        c = kSfBlack;                                                   // bridge
-    if (SfInCircle(x, y, 120, 228, 18))
-        c = kSfWhite;                                                   // smirk base
-    if (SfInRect(x, y, 90, 210, 150, 228))
-        c = kSfBlack;                                                   // erase top -> smirk
-    return c;
-}
-
-// Wink face: left eye open, right eye a closed slit, playful brows and a smirk.
-inline uint16_t SfWinkPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38))
-        c = kSfWhite;                                                   // left eye open
-    if (SfInCircle(x, y, 82, 150, 15))
-        c = kSfBlack;                                                   // left pupil
-    if (SfInRect(x, y, 120, 133, 196, 138))
-        c = kSfWhite;                                                   // right eye closed (slit)
-    if (SfInRect(x, y, 50, 80, 114, 85))
-        c = kSfBlack;                                                   // left brow raised
-    if (SfInRect(x, y, 126, 88, 190, 93))
-        c = kSfBlack;                                                   // right brow level
-    if (SfInCircle(x, y, 128, 228, 18))
-        c = kSfWhite;                                                   // smirk base (offset right)
-    if (SfInRect(x, y, 98, 210, 158, 228))
-        c = kSfBlack;                                                   // erase top -> smirk
-    return c;
-}
-
-
-// Laugh / funny face: closed happy eyes (upward arcs) and a big open grin.
-inline uint16_t SfLaughPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInTri(x, y, 60, 148, 104, 148, 82, 128) ||               // ^ closed-happy left eye
-        SfInTri(x, y, 136, 148, 180, 148, 158, 128))               // ^ closed-happy right eye
-        c = kSfWhite;
-    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
-        c = kSfBlack;                                                   // raised (happy) brows
-    if (SfInCircle(x, y, 120, 222, 28))
-        c = kSfWhite;                                                   // grin base
-    if (SfInRect(x, y, 84, 194, 156, 222))
-        c = kSfBlack;                                                   // erase top -> open grin
-    return c;
-}
-
-// Dead / dizzy face: "+" mark eyes and an open "O" mouth.
-inline uint16_t SfDeadPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 30) || SfInCircle(x, y, 158, 135, 30))
-        c = kSfWhite;                                                   // eye discs
-    if (SfInRect(x, y, 76, 121, 88, 149) || SfInRect(x, y, 152, 121, 164, 149) ||
-        SfInRect(x, y, 68, 129, 96, 141) || SfInRect(x, y, 144, 129, 172, 141))
-        c = kSfBlack;                                                   // crossed bars -> "+" eyes
-    if (SfInCircle(x, y, 120, 225, 22))
-        c = kSfWhite;                                                   // open mouth outer
-    if (SfInCircle(x, y, 120, 225, 13))
-        c = kSfBlack;                                                   // hollow centre -> "O"
-    return c;
-}
-
-// Star-struck face: sparkle (diamond) eyes and a big open grin.
-inline uint16_t SfStarPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInDiamond(x, y, 82, 135, 26) || SfInDiamond(x, y, 158, 135, 26))
-        c = kSfWhite;                                                   // sparkle eyes
-    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
-        c = kSfBlack;                                                   // raised (happy) brows
-    if (SfInCircle(x, y, 120, 222, 28))
-        c = kSfWhite;                                                   // grin base
-    if (SfInRect(x, y, 84, 194, 156, 222))
-        c = kSfBlack;                                                   // erase top -> open grin
-    return c;
-}
-
-// Worried / nervous face: uneven brows, a small mouth and a sweat drop.
-inline uint16_t SfSweatPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                   // pupils
-    if (SfInRect(x, y, 50, 80, 114, 85))
-        c = kSfBlack;                                                   // left brow raised
-    if (SfInRect(x, y, 126, 88, 190, 93))
-        c = kSfBlack;                                                   // right brow level
-    if (SfInRect(x, y, 104, 232, 136, 237))
-        c = kSfWhite;                                                   // small worried mouth
-    if (SfInCircle(x, y, 210, 108, 9))
-        c = kSfWhite;                                                   // sweat drop (right temple)
-    return c;
-}
-
-// Razz / tongue-out face: squinting eyes and a tongue poking below the mouth.
-inline uint16_t SfTonguePixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInRect(x, y, 50, 133, 112, 138) || SfInRect(x, y, 128, 133, 190, 138))
-        c = kSfWhite;                                                   // squinting eye slits (gap between)
-    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
-        c = kSfBlack;                                                   // raised playful brows
-    if (SfInRect(x, y, 96, 222, 144, 227))
-        c = kSfWhite;                                                   // mouth line
-    if (SfInRect(x, y, 104, 227, 136, 250))
-        c = kSfWhite;                                                   // tongue poking out
-    return c;
-}
-
-
-// Grin / beaming face: open eyes, raised brows and a big grin with a tooth line.
-inline uint16_t SfGrinPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                   // pupils
-    if (SfInRect(x, y, 50, 80, 114, 85) || SfInRect(x, y, 126, 80, 190, 85))
-        c = kSfBlack;                                                   // raised (happy) brows
-    if (SfInCircle(x, y, 120, 224, 32))
-        c = kSfWhite;                                                   // bigger grin base
-    if (SfInRect(x, y, 80, 192, 160, 224))
-        c = kSfBlack;                                                   // erase top -> open grin
-    if (SfInRect(x, y, 88, 222, 152, 226))
-        c = kSfBlack;                                                   // tooth line
-    return c;
-}
-
-// Unamused face: side-eye (pupils shifted right), level brows, a small flat mouth.
-inline uint16_t SfUnamusedPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes (same layout)
-    if (SfInCircle(x, y, 94, 135, 15) || SfInCircle(x, y, 170, 135, 15))
-        c = kSfBlack;                                                   // pupils shifted right -> side-eye
-    if (SfInRect(x, y, 50, 88, 114, 93) || SfInRect(x, y, 126, 88, 190, 93))
-        c = kSfBlack;                                                   // level (lowered) brows
-    if (SfInRect(x, y, 92, 235, 148, 240))
-        c = kSfWhite;                                                   // small flat mouth
-    return c;
-}
-
-// Pensive / uncertain face: a gentle furrowed brow and a small flat mouth.
-inline uint16_t SfPensivePixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes (same layout)
-    if (SfInCircle(x, y, 82, 150, 15) || SfInCircle(x, y, 158, 150, 15))
-        c = kSfBlack;                                                   // pupils
-    if (SfInTri(x, y, 44, 90, 114, 112, 114, 90) ||                    // gentle furrow, soft toward centre
-        SfInTri(x, y, 196, 90, 126, 112, 126, 90))
-        c = kSfBlack;
-    if (SfInRect(x, y, 100, 233, 140, 238))
-        c = kSfWhite;                                                   // small flat mouth
-    return c;
-}
-
-// Disappointed face: downcast eyes, disappointed brows and a big frown (no tear).
-inline uint16_t SfDisappointedPixel(int x, int y) {
-    uint16_t c = kSfBlack;
-    if (SfInCircle(x, y, 82, 135, 38) || SfInCircle(x, y, 158, 135, 38))
-        c = kSfWhite;                                                   // eyes (same layout)
-    if (SfInCircle(x, y, 82, 158, 15) || SfInCircle(x, y, 158, 158, 15))
-        c = kSfBlack;                                                   // pupils looking down
-    if (SfInTri(x, y, 40, 84, 120, 116, 120, 84) ||                    // disappointed brows, outer high -> inner low
-        SfInTri(x, y, 200, 84, 120, 116, 120, 84))
-        c = kSfBlack;
-    if (SfInCircle(x, y, 120, 240, 26))
-        c = kSfWhite;                                                   // big frown base
-    if (SfInCircle(x, y, 120, 233, 28))
-        c = kSfBlack;                                                   // erase top -> big frown
-    return c;
-}
-
-// Inverse rotation: screen pixel -> design pixel.
-inline void SfScreenToDesign(int sx, int sy, int* dx, int* dy) {
-    if (kSfRotate == 1) {
-        *dx = kSfCx - (sy - kSfCy);
-        *dy = kSfCy + (sx - kSfCx);
-    } else if (kSfRotate == -1) {
-        *dx = kSfCx + (sy - kSfCy);
-        *dy = kSfCy - (sx - kSfCx);
-    } else {
-        *dx = sx;
-        *dy = sy;
-    }
-}
-
-}  // namespace
+#define WATCH_ENABLE_FACES_TEST 0
 
 // =============================================================================
-// WatchFaceLcdDisplay — face-only display.
-//
-// Renders the procedural watch faces (normal / sad / complete / scared / remind
-// / sleep) into a full-screen lv_canvas. No chat bubbles, status text or emoji
-// widgets — just the face, driven by SetEmotion(). LVGL owns the panel I/O,
-// double-buffering and backlight; we only paint the canvas pixels.
+// WatchInterfaceBoard — Smart Clock Board with SH1106 OLED
 // =============================================================================
-class WatchFaceLcdDisplay : public SpiLcdDisplay {
-public:
-    using SpiLcdDisplay::SpiLcdDisplay;
-
-    void SetupUI() override {
-        // Idempotent: the boot face test calls SetupUI() early; Application calls
-        // it again later. Skip if the canvas is already built.
-        if (setup_ui_called_) return;
-        // Skip LcdDisplay::SetupUI (chat widgets) — build only a full-screen canvas.
-        Display::SetupUI();  // mark SetupUI as called
-        DisplayLockGuard lock(this);
-
-        lv_obj_t* scr = lv_screen_active();
-        lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-        canvas_ = lv_canvas_create(scr);
-        canvas_buf_ = (uint8_t*)heap_caps_malloc((size_t)kSfW * kSfH * sizeof(uint16_t),
-                                                 MALLOC_CAP_SPIRAM);
-        if (canvas_buf_ == nullptr) {
-            ESP_LOGE(TAG, "face: no PSRAM for canvas buffer");
-            return;
-        }
-        lv_canvas_set_buffer(canvas_, canvas_buf_, kSfW, kSfH, LV_COLOR_FORMAT_RGB565);
-        lv_obj_set_pos(canvas_, 0, 0);
-        lv_obj_clear_flag(canvas_, LV_OBJ_FLAG_SCROLLABLE);
-
-        RenderFace(current_face_);  // paint the initial face
-    }
-
-    void SetEmotion(const char* emotion) override {
-        current_face_ = FaceForEmotion(emotion);
-        if (canvas_buf_ == nullptr) return;  // SetupUI() not done yet — painted there
-        DisplayLockGuard lock(this);
-        RenderFace(current_face_);
-    }
-
-    // Faces only — swallow the chat / status / notification UI calls so the base
-    // implementations don't touch LVGL widgets that were never created.
-    void SetStatus(const char* status) override {}
-    void SetChatMessage(const char* role, const char* content) override {}
-    void ShowNotification(const char* notification, int duration_ms) override {}
-    void ShowNotification(const std::string& notification, int duration_ms) override {}
-    void ClearChatMessages() override {}
-    void SetPreviewImage(std::unique_ptr<LvglImage> image) override { (void)image; }
-    void SetTheme(Theme* theme) override {}
-    void UpdateStatusBar(bool update_all) override {}
-
-private:
-    enum Face { kNormal, kSad, kComplete, kScared, kRemind, kSleep,
-                kAngry, kFlat, kLove, kCool, kWink,
-                kLaugh, kDead, kStar, kSweat, kTongue,
-                kGrin, kUnamused, kPensive, kDisappointed };
-
-    static Face FaceForEmotion(const char* emotion) {
-        if (emotion == nullptr) return kNormal;
-        if (strcmp(emotion, "happy") == 0 || strcmp(emotion, "laughing") == 0 ||
-            strcmp(emotion, "smile") == 0 || strcmp(emotion, "excited") == 0)
-            return kComplete;
-        if (strcmp(emotion, "sad") == 0 || strcmp(emotion, "crying") == 0)
-            return kSad;
-        if (strcmp(emotion, "angry") == 0)
-            return kAngry;
-        if (strcmp(emotion, "surprised") == 0 || strcmp(emotion, "scared") == 0 ||
-            strcmp(emotion, "shocked") == 0)
-            return kScared;
-        if (strcmp(emotion, "thinking") == 0 || strcmp(emotion, "confused") == 0 ||
-            strcmp(emotion, "remind") == 0)
-            return kRemind;
-        if (strcmp(emotion, "sleeping") == 0 || strcmp(emotion, "sleepy") == 0)
-            return kSleep;
-        if (strcmp(emotion, "loving") == 0 || strcmp(emotion, "kissy") == 0)
-            return kLove;
-        if (strcmp(emotion, "cool") == 0 || strcmp(emotion, "confident") == 0)
-            return kCool;
-        if (strcmp(emotion, "winking") == 0 || strcmp(emotion, "silly") == 0)
-            return kWink;
-        if (strcmp(emotion, "embarrassed") == 0 || strcmp(emotion, "expressionless") == 0)
-            return kFlat;
-        if (strcmp(emotion, "funny") == 0)
-            return kLaugh;
-        if (strcmp(emotion, "dizzy") == 0)
-            return kDead;
-        if (strcmp(emotion, "star") == 0 || strcmp(emotion, "starstruck") == 0)
-            return kStar;
-        if (strcmp(emotion, "worried") == 0 || strcmp(emotion, "nervous") == 0)
-            return kSweat;
-        if (strcmp(emotion, "razz") == 0 || strcmp(emotion, "tongue") == 0)
-            return kTongue;
-        if (strcmp(emotion, "grin") == 0)
-            return kGrin;
-        if (strcmp(emotion, "unamused") == 0)
-            return kUnamused;
-        if (strcmp(emotion, "pensive") == 0)
-            return kPensive;
-        if (strcmp(emotion, "disappointed") == 0)
-            return kDisappointed;
-        return kNormal;  // "neutral" + anything unknown
-    }
-
-    // Paint the whole canvas from the per-pixel face function (same screen→design
-    // rotation the boot test uses) and invalidate so LVGL flushes it to the panel.
-    void RenderFace(Face f) {
-        if (canvas_buf_ == nullptr) return;
-        uint16_t* buf = reinterpret_cast<uint16_t*>(canvas_buf_);
-        for (int y = 0; y < kSfH; y++) {
-            for (int x = 0; x < kSfW; x++) {
-                int dx, dy;
-                SfScreenToDesign(x, y, &dx, &dy);
-                buf[y * kSfW + x] = PixelFor(f, dx, dy);
-            }
-        }
-        lv_obj_invalidate(canvas_);
-    }
-
-    static uint16_t PixelFor(Face f, int dx, int dy) {
-        switch (f) {
-            case kComplete: return SfCompletePixel(dx, dy, 0);    // eyes open
-            case kSad:      return SfSadPixel(dx, dy, 184, 7);    // static tear
-            case kScared:   return SfScaredPixel(dx, dy, false);  // small "O" mouth
-            case kRemind:   return SfRemindPixel(dx, dy, true);   // dot on
-            case kSleep:    return SfSleepPixel(dx, dy, false);   // no Zzz
-            case kAngry:    return SfAngryPixel(dx, dy);          // angry brows + frown
-            case kFlat:     return SfFlatPixel(dx, dy);           // deadpan
-            case kLove:     return SfLovePixel(dx, dy);           // heart eyes + grin
-            case kCool:     return SfCoolPixel(dx, dy);           // sunglasses + smirk
-            case kWink:     return SfWinkPixel(dx, dy);           // one eye closed + smirk
-            case kLaugh:    return SfLaughPixel(dx, dy);          // closed happy eyes + grin
-            case kDead:     return SfDeadPixel(dx, dy);           // "+" eyes + O mouth
-            case kStar:     return SfStarPixel(dx, dy);           // sparkle eyes + grin
-            case kSweat:    return SfSweatPixel(dx, dy);          // worried + sweat drop
-            case kTongue:   return SfTonguePixel(dx, dy);         // tongue out
-            case kGrin:     return SfGrinPixel(dx, dy);           // beaming grin + teeth
-            case kUnamused: return SfUnamusedPixel(dx, dy);       // side-eye + flat mouth
-            case kPensive:  return SfPensivePixel(dx, dy);        // gentle furrow + small mouth
-            case kDisappointed: return SfDisappointedPixel(dx, dy); // downcast + big frown
-            case kNormal:
-            default:        return SfNormalPixel(dx, dy, true);   // eyes open
-        }
-    }
-
-    lv_obj_t* canvas_ = nullptr;
-    uint8_t* canvas_buf_ = nullptr;
-    Face current_face_ = kNormal;
-};
 
 class WatchInterfaceBoard : public WifiBoard {
 private:
@@ -641,73 +77,107 @@ private:
         ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &display_i2c_bus_));
     }
 
-    void InitializeSpi() {
-        spi_bus_config_t buscfg = {};
-        buscfg.mosi_io_num = DISPLAY_MOSI_PIN;
-        buscfg.miso_io_num = GPIO_NUM_NC;
-        buscfg.sclk_io_num = DISPLAY_CLK_PIN;
-        buscfg.quadwp_io_num = GPIO_NUM_NC;
-        buscfg.quadhd_io_num = GPIO_NUM_NC;
-        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
-        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
-    }
+    void InitializeOledDisplay() {
+        ESP_LOGI(TAG, "Install SH1106 OLED panel IO via I2C");
 
-    void InitializeLcdDisplay() {
-        esp_lcd_panel_io_handle_t panel_io = nullptr;
-        esp_lcd_panel_handle_t panel = nullptr;
+        // Probe I2C bus for SH1106 display
+        // Note: 0x78 (8-bit) = 0x3C (7-bit). ESP-IDF uses 7-bit addressing.
+        bool display_found = false;
+        uint8_t display_addr = 0x3C;  // SH1106 default address (7-bit format)
 
-        ESP_LOGI(TAG, "Install panel IO");
-        esp_lcd_panel_io_spi_config_t io_config = {};
-        io_config.cs_gpio_num = DISPLAY_CS_PIN;
-        io_config.dc_gpio_num = DISPLAY_DC_PIN;
-        io_config.spi_mode = DISPLAY_SPI_MODE;
-        io_config.pclk_hz = 40 * 1000 * 1000;
-        io_config.trans_queue_depth = 10;
-        io_config.lcd_cmd_bits = 8;
-        io_config.lcd_param_bits = 8;
-        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
+        esp_err_t probe = i2c_master_probe(display_i2c_bus_, display_addr, 100);
+        if (probe == ESP_OK) {
+            ESP_LOGI(TAG, "SH1106 display found at I2C address 0x%02X", display_addr);
+            display_found = true;
+        } else {
+            ESP_LOGW(TAG, "SH1106 display not found at 0x%02X - check wiring!", display_addr);
+            ESP_LOGW(TAG, "Continuing anyway - display may still work...");
+        }
 
-        ESP_LOGI(TAG, "Install ILI9341 LCD driver");
+        esp_lcd_panel_io_i2c_config_t io_config = {
+            .dev_addr = display_addr,
+            .on_color_trans_done = nullptr,
+            .user_ctx = nullptr,
+            .control_phase_bytes = 1,
+            .dc_bit_offset = 6,
+            .lcd_cmd_bits = 8,
+            .lcd_param_bits = 8,
+            .flags = {
+                .dc_low_on_data = 0,
+                .disable_control_phase = 0,
+            },
+            .scl_speed_hz = 100 * 1000,  // Lower speed for better compatibility
+        };
+
+        ESP_LOGI(TAG, "Creating panel IO...");
+        esp_err_t ret = esp_lcd_new_panel_io_i2c_v2(display_i2c_bus_, &io_config, &panel_io_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create panel IO: 0x%x (%s)", ret, esp_err_to_name(ret));
+            return;
+        }
+        ESP_LOGI(TAG, "Panel IO created");
+
+        ESP_LOGI(TAG, "Install SH1106 OLED driver");
         esp_lcd_panel_dev_config_t panel_config = {};
-        panel_config.reset_gpio_num = DISPLAY_RST_PIN;
-        panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
-        panel_config.bits_per_pixel = 16;
+        panel_config.reset_gpio_num = -1;
+        panel_config.bits_per_pixel = 1;
 
-#if defined(LCD_TYPE_ILI9341_SERIAL)
-        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
+#if defined(LCD_TYPE_SH1106)
+        ESP_LOGI(TAG, "Creating SH1106 panel...");
+        ret = esp_lcd_new_panel_sh1106(panel_io_, &panel_config, &panel_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create SH1106 panel: 0x%x (%s)", ret, esp_err_to_name(ret));
+            return;
+        }
+        ESP_LOGI(TAG, "SH1106 panel created");
 #else
-#error "Unsupported LCD type"
+#error "Unsupported OLED type"
 #endif
 
-        esp_lcd_panel_reset(panel);
-        esp_lcd_panel_init(panel);
-        esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
-        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
-        esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        ESP_LOGI(TAG, "Resetting panel...");
+        ret = esp_lcd_panel_reset(panel_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Panel reset failed: 0x%x (%s)", ret, esp_err_to_name(ret));
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));  // Delay after reset
 
-        display_ = new WatchFaceLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                     DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        ESP_LOGI(TAG, "Initializing panel...");
+        ret = esp_lcd_panel_init(panel_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Panel init failed: 0x%x (%s)", ret, esp_err_to_name(ret));
+            return;
+        }
+        ESP_LOGI(TAG, "Panel initialized");
+        vTaskDelay(pdMS_TO_TICKS(50));  // Delay after init
+
+        ESP_LOGI(TAG, "Turning display ON...");
+        ret = esp_lcd_panel_disp_on_off(panel_, true);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to turn display on: 0x%x (%s)", ret, esp_err_to_name(ret));
+        }
+
+        ESP_LOGI(TAG, "SH1106 OLED driver installed");
+
+        ESP_LOGI(TAG, "Creating OledDisplay object...");
+        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                    DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        ESP_LOGI(TAG, "OledDisplay created");
 
 #if WATCH_ENABLE_FACES_TEST
-        // Boot face test rendered through LVGL (the canvas + flush path the
-        // runtime uses), not a raw panel write. SetupUI() builds the canvas now;
-        // the later Application::Initialize() call is a no-op (idempotent).
+        // Boot face test rendered through LVGL
+        ESP_LOGI(TAG, "Setting up UI...");
         display_->SetupUI();
+        ESP_LOGI(TAG, "Running face test...");
         RunFaceTest();
+        ESP_LOGI(TAG, "Face test done");
 #endif
     }
 
-    // Boot face test rendered through LVGL: turn the backlight on and cycle every
-    // face on the canvas via SetEmotion() (the same render path the runtime
-    // uses). The LVGL port task, started in the SpiLcdDisplay constructor, flushes
-    // each frame while we sleep between faces. Backlight is later handed to
-    // PwmBacklight by GetBacklight()->RestoreBrightness().
+    // Boot face test rendered through LVGL: cycle every face on the canvas via
+    // SetEmotion() (the same render path the runtime uses). The LVGL port task,
+    // started in the OledDisplay constructor, flushes each frame while we sleep
+    // between faces.
     void RunFaceTest() {
-        if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
-            gpio_set_direction(DISPLAY_BACKLIGHT_PIN, GPIO_MODE_OUTPUT);
-            gpio_set_level(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT ? 0 : 1);
-        }
         static const char* kFaces[] = {
             "neutral", "happy", "laughing", "sad", "angry",
             "surprised", "thinking", "sleepy", "loving", "cool",
@@ -838,8 +308,7 @@ public:
     WatchInterfaceBoard() :
         boot_button_(BOOT_BUTTON_GPIO) {
         InitializeI2c();
-        InitializeSpi();
-        InitializeLcdDisplay();
+        InitializeOledDisplay();
         InitializePca9685();
         InitializeGreenLeds();
         InitializeLimitSwitch();
@@ -848,21 +317,15 @@ public:
         InitializeButtons();
         InitializeTools();
 
-        if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
-            GetBacklight()->RestoreBrightness();
-        }
-
         // TODO: Remove after hardware verification
         // TestPca9685();
         // TestGreenLeds();
         // TestLimitSwitch();
+        // TestOledDisplay();
     }
 
     virtual Backlight* GetBacklight() override {
-        if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
-            static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
-            return &backlight;
-        }
+        // OLED displays don't require backlight control
         return nullptr;
     }
 
@@ -977,6 +440,60 @@ public:
         }
 
         ESP_LOGI(TAG, "=== Limit Switch Test Done ===");
+    }
+
+    void TestOledDisplay() {
+        ESP_LOGI(TAG, "=== SH1106 OLED Display Test Start ===");
+
+        if (!display_ || !panel_) {
+            ESP_LOGW(TAG, "Display not available — test skipped");
+            return;
+        }
+
+        /* 1. Display ON/OFF toggle test */
+        ESP_LOGI(TAG, "Test 1: Display ON/OFF");
+        for (int i = 0; i < 3; i++) {
+            esp_lcd_panel_disp_on_off(panel_, false);
+            ESP_LOGI(TAG, "  Display OFF");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_lcd_panel_disp_on_off(panel_, true);
+            ESP_LOGI(TAG, "  Display ON");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        /* 2. Display clear and basic pattern test */
+        ESP_LOGI(TAG, "Test 2: Clear display");
+        display_->SetEmotion("");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        /* 3. Display pattern test using emotions */
+        ESP_LOGI(TAG, "Test 3: Display emotion patterns");
+        static const char* kTestFaces[] = {
+            "neutral", "happy", "sad", "angry", "surprised", "cool"
+        };
+
+        for (const char* emotion : kTestFaces) {
+            ESP_LOGI(TAG, "  Displaying: %s", emotion);
+            display_->SetEmotion(emotion);
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        }
+
+        /* 4. Status text test */
+        ESP_LOGI(TAG, "Test 4: Status text display");
+        display_->SetStatus("TEST OK");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        /* 5. Notification test */
+        ESP_LOGI(TAG, "Test 5: Notification display");
+        display_->ShowNotification("OLED OK");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        /* 6. Restore neutral face */
+        ESP_LOGI(TAG, "Test 6: Restore neutral face");
+        display_->SetEmotion("neutral");
+        display_->SetStatus("");
+
+        ESP_LOGI(TAG, "=== SH1106 OLED Display Test Done ===");
     }
 };
 

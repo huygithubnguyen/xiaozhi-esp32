@@ -175,7 +175,8 @@ void OledDisplay::SetupUI_128x64() {
 
     auto screen = lv_screen_active();
     lv_obj_set_style_text_font(screen, text_font, 0);
-    lv_obj_set_style_text_color(screen, lv_color_black(), 0);
+    lv_obj_set_style_text_color(screen, lv_color_white(), 0);  // White text for OLED
+    lv_obj_set_style_bg_color(screen, lv_color_black(), 0);   // Black background
 
     /* Container */
     container_ = lv_obj_create(screen);
@@ -226,6 +227,7 @@ void OledDisplay::SetupUI_128x64() {
     lv_obj_set_scrollbar_mode(status_bar_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_layout(status_bar_, LV_LAYOUT_NONE, 0);  // Use absolute positioning
     lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 0);  // Overlap with top_bar_
+    lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);  // Hide text, show icon only
 
     notification_label_ = lv_label_create(status_bar_);
     lv_obj_set_width(notification_label_, LV_HOR_RES);
@@ -251,38 +253,14 @@ void OledDisplay::SetupUI_128x64() {
     lv_obj_set_flex_flow(content_, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_flex_main_place(content_, LV_FLEX_ALIGN_CENTER, 0);
 
-    content_left_ = lv_obj_create(content_);
-    lv_obj_set_size(content_left_, 32, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(content_left_, 0, 0);
-    lv_obj_set_style_border_width(content_left_, 0, 0);
-
-    emotion_label_ = lv_label_create(content_left_);
+    // Create emotion label directly in content (centered)
+    emotion_label_ = lv_label_create(content_);
     lv_obj_set_style_text_font(emotion_label_, large_icon_font, 0);
     lv_label_set_text(emotion_label_, FONT_AWESOME_MICROCHIP_AI);
     lv_obj_center(emotion_label_);
-    lv_obj_set_style_pad_top(emotion_label_, 8, 0);
+    // Center icon only - hide unused elements
+    chat_message_label_ = nullptr;
 
-    content_right_ = lv_obj_create(content_);
-    lv_obj_set_size(content_right_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(content_right_, 0, 0);
-    lv_obj_set_style_border_width(content_right_, 0, 0);
-    lv_obj_set_flex_grow(content_right_, 1);
-    lv_obj_add_flag(content_right_, LV_OBJ_FLAG_HIDDEN);
-
-    chat_message_label_ = lv_label_create(content_right_);
-    lv_label_set_text(chat_message_label_, "");
-    lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(chat_message_label_, width_ - 32);
-    lv_obj_set_style_pad_top(chat_message_label_, 14, 0);
-
-    // Start scrolling subtitle after a delay
-    static lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_delay(&a, 1000);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_obj_set_style_anim(chat_message_label_, &a, LV_PART_MAIN);
-    lv_obj_set_style_anim_duration(chat_message_label_, lv_anim_speed_clamped(60, 300, 60000), LV_PART_MAIN);
 
     low_battery_popup_ = lv_obj_create(screen);
     lv_obj_set_scrollbar_mode(low_battery_popup_, LV_SCROLLBAR_MODE_OFF);
